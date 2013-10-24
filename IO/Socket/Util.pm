@@ -75,6 +75,7 @@ BEGIN {
 
 sub log {
     $self = shift;
+    return;
 
     my ($seconds, $microseconds) = Time::HiRes::gettimeofday;
 
@@ -91,6 +92,7 @@ sub log {
 
 sub logf {
     $self = shift;
+    return;
 
     my ($seconds, $microseconds) = Time::HiRes::gettimeofday;
 

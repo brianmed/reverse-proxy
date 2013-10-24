@@ -19,7 +19,7 @@ sub accept {
         my $peerhost = $browser->peerhost();
         my $peerport = $browser->peerport();
         $self->log("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
-        print("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
+        # print("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
         $browser->log("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
     }
 
@@ -33,9 +33,8 @@ use parent qw(IO::Socket::INET IO::Socket::Util);
 use IO::String;
 
 sub DESTROY {
-    my $self = shift;
-    main::fhbits("remove", $self);
-    warn("[DESTROY: $self]\n");
+    # my $self = shift;
+    # warn("[DESTROY: $self]\n");
 }
 
 sub headers {
@@ -245,6 +244,7 @@ package IO::Socket::INET::Browser;
 use parent qw(IO::Socket::INET IO::Socket::Util);
 
 use IO::String;
+use Event::Lib;
 
 sub backend {
     my $self = shift;
@@ -352,8 +352,11 @@ sub process {
             Proto => 'tcp',
         );
         die "Could not create backend socket: $!\n" unless $backend;
+
+        my $event = event_new($backend, EV_READ|EV_PERSIST, \&main::event);
+        $event->add;
+
         $main::session{$backend}->{obj} = $backend;
-        main::fhbits("add", $backend);
         $backend->state("headers_to_backend");
         $backend->browser($self);
         $self->backend($backend);
@@ -484,7 +487,6 @@ package main;
 
 use IO::Socket::INET;
 use IO::String;
-use IO::Select;
 use Socket qw();
 
 my $proxy = IO::Socket::INET::Proxy->new(
@@ -500,50 +502,35 @@ die "Could not create socket: $!\n" unless $proxy;
 
 my $app = { host => "localhost", port => 3000 };
 
-my $sel = IO::Select->new($proxy);
-
 our %session = ();
 $session{$proxy} = {};
 
 our %inprocess = ();
 
-sub fhbits {
-    my $mode = shift;
-    my @fhlist = @_;
+use Event::Lib;
 
-    state %fhlist;
+my $main = event_new($proxy, EV_READ|EV_PERSIST, \&proxy);
+$main->add;
 
-    my $bits = "";
-    
-    for my $fh (@fhlist) {
-        if ("add" eq $mode) {
-            $fhlist{$fh} = $fh;
-        }
-        else {
-            delete $fhlist{$fh};
-        }
-    }
-    
-    for my $key (keys %fhlist) {
-        my $fh = $fhlist{$key};
+event_mainloop();
 
-        vec($bits, $fh->fileno, 1) = 1;
-    }
-
-    return $bits;
-}
-
-fhbits("add", $proxy);
-
-while(1) {
-    select(fhbits("ret"), undef, undef, 5) unless scalar(keys %inprocess);
+sub proxy {
+   my $event = shift;
+   my $proxy  = $event->fh;
 
     my $browser = $proxy->accept("IO::Socket::INET::Browser");
     if ($browser) {
-        fhbits("add", $browser);
         $session{$browser}->{obj} = $browser;
         $browser->state("headers_from_browser");
+
+        my $event = event_new($browser, EV_READ|EV_PERSIST, \&event);
+        $event->add;
     }
+}
+
+sub event {
+   my $event = shift;
+   my $fh  = $event->fh;
 
     my %delete = ();
 
@@ -564,6 +551,7 @@ while(1) {
         next unless $session{$key}{state};
 
         if ("delete" eq $session{$key}{state}) {
+            $event->remove;
             $delete{$key} = 1;
         }
     } 
@@ -589,6 +577,11 @@ while(1) {
     # dumper(\%delete) if keys %delete;
     # dumper(\%session) if keys %delete;
     # dumper(\%inprocess) if keys %delete;
+
+    # Eww
+    if (keys %inprocess) {
+        main::event($event);
+    }
 }
 
 sub dumper {
