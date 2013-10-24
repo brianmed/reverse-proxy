@@ -71,6 +71,8 @@ BEGIN {
 sub log {
     my $self = shift;
 
+    return unless($ENV{HTTP_PROXY_LOG});
+
     my ($seconds, $microseconds) = Time::HiRes::gettimeofday;
 
     mkdir $dir unless -d $dir;
@@ -81,15 +83,18 @@ sub log {
     open(my $fh, ">>", "$dir/$file") or die("error: open: $dir/$file: $!");
     print($fh "$seconds.$microseconds: ");
     print($fh @_);
-
-    # print("$seconds.$microseconds: ");
-    # print(@_);
-
     close($fh);
+
+    return unless($ENV{HTTP_PROXY_LOG_STDOUT});
+
+    print("$seconds.$microseconds: ");
+    print(@_);
 }
 
 sub logf {
     my $self = shift;
+
+    return unless($ENV{HTTP_PROXY_LOG});
 
     my ($seconds, $microseconds) = Time::HiRes::gettimeofday;
 
@@ -101,10 +106,12 @@ sub logf {
     open(my $fh, ">>", "$dir/$file") or die("error: open: $dir/$file: $!");
     print($fh "$seconds.$microseconds: ");
     printf($fh @_);
-
-    # print("$seconds.$microseconds: ");
-    # printf(@_);
     close($fh);
+
+    return unless($ENV{HTTP_PROXY_LOG_STDOUT});
+
+    print("$seconds.$microseconds: ");
+    printf(@_);
 }
 
 sub log_file {

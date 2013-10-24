@@ -19,7 +19,7 @@ sub accept {
         my $peerhost = $browser->peerhost();
         my $peerport = $browser->peerport();
         $self->log("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
-        print("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
+        # print("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
         $browser->log("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
     }
 
@@ -35,7 +35,7 @@ use IO::String;
 
 sub DESTROY {
     my $self = shift;
-    warn("[DESTROY: $self]\n");
+    # warn("[DESTROY: $self]\n");
 }
 
 sub headers {
@@ -99,7 +99,7 @@ sub state {
         }
 
         if ("delete" eq $_[0]) {
-            event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
+            # event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
         }
 
         $self->inprocess(1);
@@ -252,7 +252,7 @@ use IO::String;
 
 sub DESTROY {
     my $self = shift;
-    warn("[DESTROY: $self]\n");
+    # warn("[DESTROY: $self]\n");
 }
 
 sub backend {
@@ -292,7 +292,7 @@ sub state {
         }
 
         if ("delete" eq $_[0]) {
-            event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
+            # event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
         }
 
         $self->inprocess(1);
@@ -372,7 +372,7 @@ sub process {
         );
         die "Could not create backend socket: $!\n" unless $backend;
 
-        my $event = event_new($backend, EV_READ|EV_WRITE|EV_PERSIST, \&main::event);
+        my $event = event_new($backend, EV_READ|EV_PERSIST, \&main::event);
         $main::session{$backend}->{event} = $event;
         $event->add;
 
@@ -536,11 +536,6 @@ $main->add;
 
 event_mainloop();
 
-#for #(1 .. 500) {
-    #   event_one_loop();
-#}
-#exit;
-
 sub proxy {
    my $proxy = shift->fh;
 
@@ -550,7 +545,7 @@ sub proxy {
         $browser->state("headers_from_browser");
         $browser->blocking(0);
 
-        my $event = event_new($browser, EV_READ|EV_WRITE|EV_PERSIST, \&event);
+        my $event = event_new($browser, EV_READ|EV_PERSIST, \&event);
         $session{$browser}->{event} = $event;
         $event->add;
     }
@@ -566,8 +561,32 @@ sub websocket {
 sub event {
     my $e = shift;
     my $type = shift;
+    my $h = $e->fh;
 
-    $e->fh->process;
+    while (my $state = $h->state) {
+        if ("iowait" eq $state) {
+            my $browser = $h->can("browser");
+
+            if ($browser) {
+                $h->browser->process;
+                # event_new($h->browser, EV_TIMEOUT, \&main::event)->add(0.01);
+            }
+            else {
+                $h->backend->process;
+                # event_new($h->backend, EV_TIMEOUT, \&main::event)->add(0.01);
+            }
+
+            last;
+        } elsif ("delete" eq $state) {
+            event_new($h, EV_TIMEOUT, \&main::cull_session)->add(0.1);
+            last;
+        }
+        else {
+            $Devel::Trace::TRACE = 0;
+            $h->process;
+            $Devel::Trace::TRACE = 1;
+        }
+    }
 }
 
 sub inprocess {
