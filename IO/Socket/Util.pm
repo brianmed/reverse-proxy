@@ -1,5 +1,8 @@
 package IO::Socket::Util;
 
+use strict;
+use warnings;
+
 use Time::HiRes;
 use POSIX qw();
 
@@ -9,30 +12,22 @@ sub recv_headers {
     my $peerhost = $self->peerhost();
     my $peerport = $self->peerport();
 
-    $self->log("[Receiving headers: $peerhost::$peerport]\n");
-
-    my $io = $self->headers(IO::String->new);
+    my $io = $self->headers;
     my $ref = $io->string_ref;
 
+    # $self->log("[Receiving headers: $peerhost::$peerport]\n") unless $io->getpos;
+
     my $buf;
-    my $eol = 0;
-    # while(defined $self->recv($buf, 1, Socket::MSG_PEEK)) {
-    while(defined $self->recv($buf, 1)) {
+    while(defined $self->recv($buf, 128)) {
         last if 0 == length($buf);
-
-        # $self->recv($buf, 1);
-
-        if ($buf =~ m/[\015\012]/) {
-            ++$eol;
-        }
-        else {
-            $eol = 0;
-        }
 
         $io->print($buf);
 
-        last if 4 == $eol;
+        last if $$ref =~ m#\015\012\015\012#;
+        # last;
     }
+
+    return($io) if $$ref !~ m#\015\012\015\012#;
 
     $self->log("[Printing headers: $peerhost::$peerport]\n");
 
@@ -74,8 +69,7 @@ BEGIN {
 };
 
 sub log {
-    $self = shift;
-    return;
+    my $self = shift;
 
     my ($seconds, $microseconds) = Time::HiRes::gettimeofday;
 
@@ -87,12 +81,15 @@ sub log {
     open(my $fh, ">>", "$dir/$file") or die("error: open: $dir/$file: $!");
     print($fh "$seconds.$microseconds: ");
     print($fh @_);
+
+    # print("$seconds.$microseconds: ");
+    # print(@_);
+
     close($fh);
 }
 
 sub logf {
-    $self = shift;
-    return;
+    my $self = shift;
 
     my ($seconds, $microseconds) = Time::HiRes::gettimeofday;
 
@@ -104,6 +101,9 @@ sub logf {
     open(my $fh, ">>", "$dir/$file") or die("error: open: $dir/$file: $!");
     print($fh "$seconds.$microseconds: ");
     printf($fh @_);
+
+    # print("$seconds.$microseconds: ");
+    # printf(@_);
     close($fh);
 }
 

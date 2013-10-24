@@ -19,7 +19,7 @@ sub accept {
         my $peerhost = $browser->peerhost();
         my $peerport = $browser->peerport();
         $self->log("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
-        # print("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
+        print("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
         $browser->log("[Accepted New Browser Connection From : $peerhost, $peerport]\n");
     }
 
@@ -30,11 +30,12 @@ package IO::Socket::INET::Backend;
 
 use parent qw(IO::Socket::INET IO::Socket::Util);
 
+use Event::Lib;
 use IO::String;
 
 sub DESTROY {
-    # my $self = shift;
-    # warn("[DESTROY: $self]\n");
+    my $self = shift;
+    warn("[DESTROY: $self]\n");
 }
 
 sub headers {
@@ -92,6 +93,14 @@ sub state {
     
     if (@_) {
         $session->{state} = $_[0];
+
+        if ("headers_from_backend" eq $_[0]) {
+            $self->headers(IO::String->new);
+        }
+
+        if ("delete" eq $_[0]) {
+            event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
+        }
 
         $self->inprocess(1);
     }
@@ -162,26 +171,19 @@ sub process {
     }
 
     if ("headers_from_backend" eq $self->state) {
-        $self->log("[Receiving backend response: $peerhost::$peerport -> ${browserhost}::$browserport]\n");
-
         $self->recv_headers;
 
+        # $self->log("[Receiving backend response: $peerhost::$peerport -> ${browserhost}::$browserport]\n");
+
         my $io = $self->headers;
-        my $ws = 0;
-        while(<$io>) {
-            $ws = 1 if m#Sec-WebSocket-Accept#;
-        }
+        my $ref = $io->string_ref;
+
+        return(undef) if $$ref !~ m#\015\012\015\012#;
+
         $io->setpos(0);
 
-        if (0 && $ws) {
-            $self->websocket(1);
-            $self->browser->websocket(1);
-            $self->state("websocket");
-            $self->browser->state("websocket");
-        } else {
-            $self->state("iowait");
-            $self->browser->state("headers_to_browser");
-        }
+        $self->state("iowait");
+        $self->browser->state("headers_to_browser");
     }
 
     if ("pipe" eq $self->state) {
@@ -193,18 +195,21 @@ sub process {
                 last if 0 == length($buf);
 
                 $self->logf("[Sending backend packet (%d): ${peerhost}::$peerport -> ${browserhost}::$browserport]\n", length($buf)) if $log;
-                $log = 1;
+                $log = 0;
 
                 $bytes += length($buf);
 
-                $self->browser->send($buf);
+                my $cnt = $self->browser->send($buf);
+                if ($cnt != length($buf)) {
+                    die;
+                }
 
                 last if length($buf) == $self->content_length;
                 last if $bytes == $self->content_length;
             }
         }
 
-        $self->logf("[No more packets ($bytes): ${peerhost}::$peerport -> ${browserhost}::$browserport]\n");
+        $self->logf("[No more packets ($bytes - %d): ${peerhost}::$peerport -> ${browserhost}::$browserport]\n", $self->content_length);
 
         if ($self->keep_alive) {
             $self->browser->state("headers_from_browser");
@@ -213,7 +218,6 @@ sub process {
         else {
             $self->state("delete");
             $self->browser->state("delete");
-            # $self->browser->state("headers_from_browser");
             $self->inprocess("delete");
             $self->browser->inprocess("delete");
         }
@@ -243,8 +247,13 @@ package IO::Socket::INET::Browser;
 
 use parent qw(IO::Socket::INET IO::Socket::Util);
 
-use IO::String;
 use Event::Lib;
+use IO::String;
+
+sub DESTROY {
+    my $self = shift;
+    warn("[DESTROY: $self]\n");
+}
 
 sub backend {
     my $self = shift;
@@ -277,6 +286,14 @@ sub state {
     
     if (@_) {
         $session->{state} = $_[0];
+
+        if ("headers_from_browser" eq $_[0]) {
+            $self->headers(IO::String->new);
+        }
+
+        if ("delete" eq $_[0]) {
+            event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
+        }
 
         $self->inprocess(1);
     }
@@ -342,6 +359,7 @@ sub process {
         my $io = $self->headers;
         my $ref = $io->string_ref;
 
+        return(undef) if $$ref !~ m#\015\012\015\012#;
         return(undef) if 0 == length($$ref);
 
         $self->state("iowait");
@@ -350,10 +368,12 @@ sub process {
             PeerAddr => 'localhost',
             PeerPort => 8080,
             Proto => 'tcp',
+            Blocking => 0,
         );
         die "Could not create backend socket: $!\n" unless $backend;
 
-        my $event = event_new($backend, EV_READ|EV_PERSIST, \&main::event);
+        my $event = event_new($backend, EV_READ|EV_WRITE|EV_PERSIST, \&main::event);
+        $main::session{$backend}->{event} = $event;
         $event->add;
 
         $main::session{$backend}->{obj} = $backend;
@@ -389,6 +409,8 @@ sub process {
             $ws = 1 if m#Sec-WebSocket-Accept#;
         }
         $io->setpos(0);
+
+        my $ref = $io->string_ref;
 
         if (304 == $code) {
             $self->state("headers_from_backend");
@@ -428,7 +450,7 @@ sub process {
             $self->state("websocket");
             $self->backend->state("websocket");
         }
-        else {
+        elsif (0 != length($$ref)) {
             while(<$io>) {
                 warn($_);
             }
@@ -514,50 +536,88 @@ $main->add;
 
 event_mainloop();
 
+#for #(1 .. 500) {
+    #   event_one_loop();
+#}
+#exit;
+
 sub proxy {
-   my $event = shift;
-   my $proxy  = $event->fh;
+   my $proxy = shift->fh;
 
     my $browser = $proxy->accept("IO::Socket::INET::Browser");
     if ($browser) {
         $session{$browser}->{obj} = $browser;
         $browser->state("headers_from_browser");
+        $browser->blocking(0);
 
-        my $event = event_new($browser, EV_READ|EV_PERSIST, \&event);
+        my $event = event_new($browser, EV_READ|EV_WRITE|EV_PERSIST, \&event);
+        $session{$browser}->{event} = $event;
         $event->add;
     }
 }
 
-sub event {
+sub websocket {
    my $event = shift;
-   my $fh  = $event->fh;
+   my $fh = $event->fh;
 
-    my %delete = ();
+   $fh->process;
+}
 
-    foreach my $key (keys %inprocess) {
+sub event {
+    my $e = shift;
+    my $type = shift;
+
+    $e->fh->process;
+}
+
+sub inprocess {
+    my @inprocess = keys %inprocess;
+    foreach my $key (@inprocess) {
         my $fh = $session{$key}{obj};
+        # my $event = $session{$key}{event};
         
         next if "iowait" eq $fh->state;
 
         if ($fh->websocket) {
-            $fh->recv(my $buf, 128, Socket::MSG_PEEK | Socket::MSG_DONTWAIT);
-            next if !defined $buf || 0 == length($buf);
+            # $event->remove;
+            my $browser = $fh->can("browser");
+            my $backend = $fh->can("backend");
+
+            if ($browser) {
+                $fh->inprocess(0);
+                $fh->browser->inprocess(0);
+            }
+            elsif ($backend) {
+                $fh->inprocess(0);
+                $fh->backend->inprocess(0);
+            }
+            my $ws = event_new($fh, EV_READ|EV_PERSIST, \&websocket);
+            $ws->add;
+
+            return;
         }
 
         $fh->process;
     }
+    return(scalar(@inprocess));
+}
+
+sub cull_session {
+    my %delete = ();
 
     foreach my $key (keys %session) {
         next unless $session{$key}{state};
 
         if ("delete" eq $session{$key}{state}) {
-            $event->remove;
+            $session{$key}{event}->remove;
             $delete{$key} = 1;
         }
     } 
 
     foreach my $key (keys %delete) {
         $session{$key}{obj}->shutdown(Socket::SHUT_RDWR);
+        # $session{$key}{obj}->flush();
+        # $session{$key}{obj}->close();
         delete $session{$key};
     }
 
@@ -573,19 +633,12 @@ sub event {
             }
         }
     }
-
-    # dumper(\%delete) if keys %delete;
-    # dumper(\%session) if keys %delete;
-    # dumper(\%inprocess) if keys %delete;
-
-    # Eww
-    if (keys %inprocess) {
-        main::event($event);
-    }
 }
 
 sub dumper {
     require Data::Dumper;
+    $Data::Dumper::Useqq = 1;
+    $Data::Dumper::Useqq = 1;
 
     print Data::Dumper::Dumper(\@_);
 }
