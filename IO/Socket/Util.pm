@@ -29,7 +29,7 @@ sub recv_headers {
 
     return($io) if $$ref !~ m#\015\012\015\012#;
 
-    $self->log("[Printing headers: $peerhost::$peerport]\n");
+    $self->log("[Printing headers: ${peerhost}::$peerport]\n");
 
     $io->setpos(0);
 

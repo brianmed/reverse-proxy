@@ -99,7 +99,7 @@ sub state {
         }
 
         if ("delete" eq $_[0]) {
-            # event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
+            event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
         }
 
         $self->inprocess(1);
@@ -292,7 +292,7 @@ sub state {
         }
 
         if ("delete" eq $_[0]) {
-            # event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
+            event_new($self, EV_TIMEOUT, \&main::cull_session)->add(0.1);
         }
 
         $self->inprocess(1);
@@ -534,7 +534,16 @@ use Event::Lib;
 my $main = event_new($proxy, EV_READ|EV_PERSIST, \&proxy);
 $main->add;
 
-event_mainloop();
+# my $timer = timer_new(\&inprocess);
+# $timer->add(0.04);
+
+# event_mainloop();
+
+while (1) {
+    event_one_loop();
+    
+    inprocess();
+}
 
 sub proxy {
    my $proxy = shift->fh;
@@ -563,61 +572,54 @@ sub event {
     my $type = shift;
     my $h = $e->fh;
 
-    while (my $state = $h->state) {
-        if ("iowait" eq $state) {
-            my $browser = $h->can("browser");
-
-            if ($browser) {
-                $h->browser->process;
-                # event_new($h->browser, EV_TIMEOUT, \&main::event)->add(0.01);
-            }
-            else {
-                $h->backend->process;
-                # event_new($h->backend, EV_TIMEOUT, \&main::event)->add(0.01);
-            }
-
-            last;
-        } elsif ("delete" eq $state) {
-            event_new($h, EV_TIMEOUT, \&main::cull_session)->add(0.1);
-            last;
-        }
-        else {
-            $Devel::Trace::TRACE = 0;
-            $h->process;
-            $Devel::Trace::TRACE = 1;
-        }
-    }
+    $h->process;
 }
 
 sub inprocess {
-    my @inprocess = keys %inprocess;
-    foreach my $key (@inprocess) {
-        my $fh = $session{$key}{obj};
-        # my $event = $session{$key}{event};
-        
-        next if "iowait" eq $fh->state;
+    my $e = shift;
 
-        if ($fh->websocket) {
-            # $event->remove;
-            my $browser = $fh->can("browser");
-            my $backend = $fh->can("backend");
+    my @inprocess = ();
 
-            if ($browser) {
-                $fh->inprocess(0);
-                $fh->browser->inprocess(0);
+    while (1) {
+        @inprocess = keys %inprocess;
+        my $once = 0;
+        foreach my $key (@inprocess) {
+            my $fh = $session{$key}{obj};
+            my $event = $session{$key}{event};
+
+            next if "iowait" eq $fh->state;
+
+            if ($fh->websocket) {
+                $event->remove;
+                my $browser = $fh->can("browser");
+                my $backend = $fh->can("backend");
+
+                if ($browser) {
+                    $fh->inprocess(0);
+                    $fh->browser->inprocess(0);
+                }
+                elsif ($backend) {
+                    $fh->inprocess(0);
+                    $fh->backend->inprocess(0);
+                }
+                my $ws = event_new($fh, EV_READ|EV_PERSIST, \&websocket);
+                $ws->add;
+
+                return;
             }
-            elsif ($backend) {
-                $fh->inprocess(0);
-                $fh->backend->inprocess(0);
-            }
-            my $ws = event_new($fh, EV_READ|EV_PERSIST, \&websocket);
-            $ws->add;
 
-            return;
+            my $old_state = $fh->state;
+            $fh->process;
+            my $new_state = $fh->state;
+
+            if ($old_state ne $new_state) {
+                $once = 1;
+            }
         }
 
-        $fh->process;
-    }
+        last if 0 == $once;
+    } 
+
     return(scalar(@inprocess));
 }
 
