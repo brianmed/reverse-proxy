@@ -91,22 +91,6 @@ sub get_headers {
 sub pipe_body {
     my ($backend, $browser, $cb) = @_;
 
-    # $browser->on_drain;
-
-    # if ($backend->content_length == $backend->send_size) {
-#         $browser->on_drain(sub {
-#             if (0 == $backend->send_size) {
-#                 $browser->init;
-#                 $backend->init;
-#                 
-#                 $cb->($browser, $backend);
-#             }
-#         });
-    # }
-
-    # say(">>> " . $backend->rbuf);
-    # say(">>> " . $backend->content_length . " " . $backend->send_size);
-
     if ($backend->wtf_buffer) {
         $browser->push_write($backend->wtf_buffer);
         $backend->send_size($backend->send_size - length($backend->wtf_buffer));
@@ -127,8 +111,6 @@ sub pipe_body {
     else {
         $browser->push_write($msg);
     }
-
-    # $backend->on_read(sub { shift->pipe_body($browser) });
 }
 
 package Browser;
@@ -221,12 +203,6 @@ use feature qw(:5.16);
 use AnyEvent;
 use AnyEvent::Socket;
 
-# use IO::Socket::INET;
-# use IO::Socket::INET::Proxy;
-# use IO::Socket::INET::Browser;
-# use IO::String;
-# use Socket qw();
-
 my $server = tcp_server("127.0.0.1", "3152", \&proxy_accept);
 
 sub proxy_accept {
@@ -243,38 +219,15 @@ sub proxy_accept {
 sub transaction {
     my ($browser, $backend) = @_;
     
-    # # Read response headers and send to browser
-    # $backend->on_drain( sub { $backend->push_read(line => sub { shift->get_headers(@_, $browser) }) });
-    
     # Send body
-    $browser->on_drain( sub { $backend->on_read(sub { shift->pipe_body($browser) }) });
+    $browser->on_drain(sub { $backend->on_read(sub { shift->pipe_body($browser) }) });
 
+    # Read response headers after sending request headers
     $backend->on_drain(sub { $backend->push_read(line => sub { shift->get_headers(@_, $browser) }) });
     
+    # Read headers
     $browser->push_read(line => sub { shift->get_headers(@_, $backend) });
     $backend->push_read(line => sub { shift->get_headers(@_, $browser) });
-
-#     my $done = AnyEvent->condvar;
-#  
-#     # Get request headers from user
-#     $browser->push_read(line => sub { shift->get_headers(@_, sub { $done->send }) });
-#     $done->recv;
-#  
-#     # Send request header to server
-#     $backend->push_write(${ $browser->headers->string_ref });
-#  
-#     # Read response headers
-#     $backend->on_drain( sub { $backend->push_read(line => sub { shift->get_headers(@_, $done) }) });
-#     $done->recv;
-#  
-#     # Send response headers
-#     $browser->push_write(${ $backend->headers->string_ref });
-#     $browser->on_drain( sub { $done->send } );
-#     $done->recv;
-#  
-#     # Pipe body
-#     $backend->on_read(sub { shift->pipe_body($browser, $done) });
-#     $done->recv;
 }
 
 my $done = AnyEvent->condvar;
@@ -288,37 +241,3 @@ sub dumper {
 
     print Data::Dumper::Dumper(\@_);
 }
-
-__END__
-# *****
-
-my $proxy = IO::Socket::INET::Proxy->new(
-    LocalAddr => 'localhost',
-    LocalPort => 3152,
-    Listen    => 1,
-    Reuse => 1,
-    Proto => 'tcp',
-    Blocking => 0,
-);
-
-die "Could not create socket: $!\n" unless $proxy;
-
-sub proxy {
-   my $proxy = shift->fh;
-
-    my $browser = $proxy->accept("IO::Socket::INET::Browser");
-    if ($browser) {
-        # $session{$browser}->{obj} = $browser;
-        $browser->blocking(0);
-    }
-}
-
-my $cv = AnyEvent->condvar;
- 
-my $io_watcher = AnyEvent->io (
-   fh   => $proxy,
-   poll => 'r',
-   cb   => \&proxy,
-);
- 
-$cv->recv; # wait until user enters /^q/i
