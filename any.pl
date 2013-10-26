@@ -10,6 +10,7 @@ use Mojo::Base 'AnyEvent::Handle';
 use AnyEvent::Socket;
 use IO::String;
 
+has qw(browser);
 has qw(headers);
 has qw(headers_done);
 has qw(wtf_buffer);
@@ -37,11 +38,24 @@ sub new {
             undef($backend);
             AE::log info => "Done.";
         }, 
+        on_read => \&default_read,
     );
+
+    $backend->browser(delete $ops{browser});
+    $backend->browser->backend($backend);  # Hrmm
 
     $backend->init;
 
     return($backend);
+}
+
+sub default_read {
+   my ($backend) = @_;
+ 
+   # called each time we receive data but the read queue is empty
+   # simply start read the request
+ 
+   $backend->push_read(line => \&get_headers);
 }
 
 sub init {
@@ -56,13 +70,14 @@ sub init {
 }
 
 sub get_headers {
-    my ($backend, $line, $eol, $browser) = @_;
+    my ($backend, $line, $eol) = @_;
 
     my $h = $backend->headers;
 
     if (!$line) {
         print($h "\015\012");
         $backend->headers_done(1);
+        $backend->stop_read;
 
         $h->setpos(0);
         while (<$h>) {
@@ -73,26 +88,24 @@ sub get_headers {
                 $backend->send_size($1);
             }
             if (/Connection: close/) {
-                $browser->keep_alive(0);
+                $backend->keep_alive(0);
             }
         }
         $h->setpos(0);
 
-        $browser->push_write(${ $backend->headers->string_ref });
-
         # "pipe" content if avail, if not, then restart
         if ($backend->content_length) {
-            $backend->stop_read;
-            # Send the request header, then "pipe" the content
-            $browser->on_drain(sub { $backend->on_read(sub { shift->pipe_body($browser) }) });
+            # Send the response header, then "pipe" the content
+            $backend->browser->push_write(${ $backend->headers->string_ref });
+            $backend->browser->on_drain(sub { $backend->unshift_read(sub { shift->pipe_body($backend->browser) }) });  # Who sells see shores?
         }
         else {
-            $browser->on_drain( sub { shift->restart($backend) } );
+            $backend->browser->push_write(${ $backend->headers->string_ref });
+            $backend->browser->on_drain(sub { shift->restart($backend) });
         }
     }
     elsif ($line && !$backend->headers_done) {
         print($h "$line$eol");
-        $backend->push_read(line => sub { shift->get_headers(@_, $browser) });
     }
     else {
         $backend->wtf_buffer($backend->wtf_buffer ."$line$eol");
@@ -102,7 +115,11 @@ sub get_headers {
 }
 
 sub pipe_body {
-    my ($backend, $browser, $cb) = @_;
+    my ($backend, $browser) = @_;
+
+    if ($backend->content_length == $backend->send_size) {
+        $browser->on_drain(undef);
+    }
 
     if ($backend->wtf_buffer) {
         $browser->push_write($backend->wtf_buffer);
@@ -118,6 +135,8 @@ sub pipe_body {
 
     if (0 == $backend->send_size) {
         say(">>> [s] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+        $browser->stop_read;
+        $backend->stop_read;
         $browser->push_write($msg);
 
         if ($browser->keep_alive && $backend->keep_alive) {
@@ -126,11 +145,17 @@ sub pipe_body {
         else {
             $browser->on_drain( sub { shutdown($$backend{fh}, 1); $backend->timeout(1); } );
         }
+
+        return 1;
     }
     else {
         say(">>> [w] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
         $browser->push_write($msg);
+
+        # $browser->on_drain(sub { $backend->push_read(sub { shift->pipe_body($browser) }) });
     }
+
+    return 0;
 }
 
 package Browser;
@@ -145,6 +170,7 @@ use Mojo::Base 'AnyEvent::Handle';
 use AnyEvent::Socket;
 use IO::String;
 
+has qw(backend);
 has qw(headers);
 has qw(headers_done);
 has qw(post);
@@ -172,8 +198,9 @@ sub new {
             undef($browser);
             AE::log info => "Done.";
         }, 
+        on_read => \&default_read,
     );
-    
+
     $browser->init;
 
     return($browser);
@@ -195,19 +222,20 @@ sub restart {
 
     say("===") if $ENV{HTTP_PROXY_LOG};
 
-    $browser->on_drain(undef);
-    $backend->on_drain(undef);
-    $browser->start_read;
-    $backend->start_read;
     $backend->init;
     $browser->init;
 
-    # Read request headers
-    $browser->push_read(line => sub { shift->get_headers(@_, $backend) });
+    $browser->on_drain(undef);
+    $backend->on_drain(undef);
+    # $browser->on_read(\&Browser::default_read);
+    # $backend->on_read(\&Backend::default_read);
+
+    $browser->start_read;
+    $backend->start_read;
 }
 
 sub pipe_post {
-    my ($browser, $backend, $cb) = @_;
+    my ($browser, $backend) = @_;
 
     my $msg = $browser->rbuf;
     substr($browser->rbuf, 0) = "";
@@ -220,12 +248,21 @@ sub pipe_post {
 
     if (0 == $browser->send_size) {
         # Read response headers after sending POST
-        $backend->on_drain(sub { $backend->push_read(line => sub { shift->get_headers(@_, $browser) }) });
+        $backend->on_drain(sub { $backend->on_read(\&Backend::default_read) });
     }
 }
+sub default_read {
+   my ($backend) = @_;
+ 
+   # called each time we receive data but the read queue is empty
+   # simply start read the request
+ 
+   $backend->push_read(line => \&get_headers);
+}
+
 
 sub get_headers {
-    my ($browser, $line, $eol, $backend) = @_;
+    my ($browser, $line, $eol) = @_;
 
     my $h = $browser->headers;
 
@@ -251,33 +288,32 @@ sub get_headers {
 
         if ($browser->post) {
             # Send POST headers to backend
-            $backend->push_write(${ $browser->headers->string_ref });
+            $browser->backend->push_write(${ $browser->headers->string_ref });
 
             # "pipe" POST data if avail, if not, then read backend headers
             if ($browser->content_length) {
-                $backend->on_drain(sub { $browser->on_read(sub { shift->pipe_post($backend) }) });
+                die;
+                $browser->backend->on_drain(sub { $browser->on_read(sub { shift->pipe_post }) });
             }
             else {
-                $backend->on_drain(sub { $backend->push_read(line => sub { shift->get_headers(@_, $browser) }) });
+                # $browser->backend->on_drain(sub { $browser->backend->push_read(line => sub { shift->get_headers(@_) }) });
             }
         }
         else {
             # Write the non post request
-            $backend->push_write(${ $browser->headers->string_ref });
+            $browser->backend->push_write(${ $browser->headers->string_ref });
 
             # Read response headers after sending request headers
-            $backend->on_drain(sub { $backend->push_read(line => sub { shift->get_headers(@_, $browser) }) });
+            # $browser->backend->on_drain(sub { $browser->backend->push_read(line => sub { shift->get_headers(@_) }) });
         }
     }
     elsif ($line && !$browser->headers_done) {
         print($h "$line$eol");
-        $browser->push_read(line => sub { shift->get_headers(@_, $backend) });
+        # $browser->push_read(line => sub { shift->get_headers(@_) });
     }
     else {
         die;
     }
-
-    return(1);
 }
 
 package main;
@@ -298,10 +334,7 @@ sub proxy_accept {
     my $browser = Browser->new($fh, $host, $port);
     tcp_connect(localhost => 8080, sub {
         my $fh = shift or die "unable to connect: $!";
-        my $backend = Backend->new(fh => $fh);
-    
-        # Read request headers
-        $browser->push_read(line => sub { shift->get_headers(@_, $backend) });
+        my $backend = Backend->new(fh => $fh, browser => $browser);
     });
 }
 
