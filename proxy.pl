@@ -29,22 +29,6 @@ $session{$proxy} = {};
 
 our %inprocess = ();
 
-use Event::Lib;
-
-my $main = event_new($proxy, EV_READ|EV_PERSIST, \&proxy);
-$main->add;
-
-# my $timer = timer_new(\&inprocess);
-# $timer->add(0.04);
-
-# event_mainloop();
-
-while (1) {
-    event_one_loop();
-    
-    inprocess();
-}
-
 sub proxy {
    my $proxy = shift->fh;
 
