@@ -26,6 +26,7 @@ sub new {
     my $backend;
     $backend = shift->SUPER::new(
         fh => $ops{fh},
+        timeout => 4,
         on_error => sub {
             AE::log error => $_[2];
             $_[0]->destroy;
@@ -90,7 +91,7 @@ sub get_headers {
 sub pipe_body {
     my ($backend, $browser, $cb) = @_;
 
-    $browser->on_drain;
+    # $browser->on_drain;
 
     # if ($backend->content_length == $backend->send_size) {
 #         $browser->on_drain(sub {
@@ -117,9 +118,15 @@ sub pipe_body {
     substr($backend->rbuf, 0) = "";
 
     $backend->send_size($backend->send_size - length($msg));
-    $browser->push_write($msg);
-
     say(">>> " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+
+    if (0 == $backend->send_size) {
+        $browser->on_drain( sub { shutdown($$browser{fh}, 2); shutdown($$backend{fh}, 2); undef($backend); } );
+        $browser->push_write($msg);
+    }
+    else {
+        $browser->push_write($msg);
+    }
 
     # $backend->on_read(sub { shift->pipe_body($browser) });
 }
@@ -148,6 +155,7 @@ sub new {
     my $browser;
     $browser = shift->SUPER::new(
         fh => $fh,
+        timeout => 4,
         on_error => sub {
             AE::log error => $_[2];
             $_[0]->destroy;
@@ -239,11 +247,7 @@ sub transaction {
     # $backend->on_drain( sub { $backend->push_read(line => sub { shift->get_headers(@_, $browser) }) });
     
     # Send body
-    $browser->on_drain( 
-        sub { 
-            $backend->on_read(sub { shift->pipe_body($browser) });
-        }
-    );
+    $browser->on_drain( sub { $backend->on_read(sub { shift->pipe_body($browser) }) });
 
     $backend->on_drain(sub { $backend->push_read(line => sub { shift->get_headers(@_, $browser) }) });
     
