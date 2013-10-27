@@ -3,7 +3,7 @@ package Backend;
 use strict;
 use warnings;
 
-use feature qw(:5.16);
+use feature qw(:5.10);
 
 use Mojo::Base 'AnyEvent::Handle';
 
@@ -163,7 +163,7 @@ package Browser;
 use strict;
 use warnings;
 
-use feature qw(:5.16);
+use feature qw(:5.10);
 
 use Mojo::Base 'AnyEvent::Handle';
 
@@ -173,6 +173,7 @@ use IO::String;
 has qw(backend);
 has qw(headers);
 has qw(headers_done);
+has qw(host);
 has qw(content_length);
 has qw(send_size);
 has qw(keep_alive);
@@ -221,6 +222,7 @@ sub init {
 
     $browser->headers(IO::String->new);
     $browser->headers_done(0);
+    $browser->host("");
     $browser->content_length(undef);
     $browser->send_size(0);
     $browser->keep_alive(1);
@@ -282,6 +284,9 @@ sub get_headers {
 
         $h->setpos(0);
         while (<$h>) {
+            if (/Host:\s+(.*)/) {
+                $browser->host($1);
+            }
             if (/Content-Length: (\d+)/) {
                 $browser->content_length($1);
                 $browser->send_size($1);
@@ -306,11 +311,28 @@ sub get_headers {
 sub connect_backend {
     my ($browser) = @_;
 
-    tcp_connect(localhost => 8080, sub {
-        my $fh = shift or die "unable to connect: $!";
-        my $backend = Backend->new(fh => $fh, browser => $browser);
+    my $vhosts = $main::Config{vhost};
 
-        $backend->browser->parse_header;
+    my $host_header = $browser->host;
+    my $host = $vhosts->{default}{host};
+    my $port = $vhosts->{default}{port};
+
+    foreach my $vhost (keys %vhosts) {
+        if ($host_header eq $vhost) {
+            $host = $vhosts{$vhost}{host};
+            $port = $vhosts{$vhost}{port};
+        }
+    }
+
+    tcp_connect($host => $port, sub {
+        eval {
+            my $fh = shift or die "unable to connect: [$host:$port]: $!";
+            say("tcp_connect($_[0]:$_[1])") if ($ENV{HTTP_PROXY_LOG});
+            my $backend = Backend->new(fh => $fh, browser => $browser);
+
+            $backend->browser->parse_header;
+        };
+        warn($@);
     });
 }
 
@@ -339,16 +361,62 @@ package main;
 use strict;
 use warnings;
 
-use feature qw(:5.16);
+use feature qw(:5.10);
 
 use AnyEvent;
 use AnyEvent::Socket;
+use Getopt::Long;
+use JSON::PP;
 
-my $server = tcp_server("127.0.0.1", "3152", \&proxy_accept);
+our %Config = (
+    config_file => "reverse_http.json",
+    host => "127.0.0.1",
+    port => "80",
+    vhost => {},
+);
+
+GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s");
+
+if (!$Config{vhost}{default}) {
+    $Config{vhost}{default}{host} = "127.0.0.1";
+    $Config{vhost}{default}{port} = "8080";
+}
+
+if ($Config{add}) {
+    if ($Config{add} =~ m#^vhost:(?<vhost>[^:]+):(?<host>[^:]+):(?<port>\d+)#) {
+        my ($vhost, $host, $port) = ($+{vhost}, $+{host}, $+{port});
+
+        $Config{vhost}{$vhost}{host} = $host;
+        $Config{vhost}{$vhost}{port} = $port;
+    }
+    elsif ($Config{add} =~ m#^host:(?<host>.*)#) {
+        $Config{host} = $+{host};
+    }
+    elsif ($Config{add} =~ m#^port:(?<port>.*)#) {
+        $Config{port} = $+{port};
+    }
+
+    delete($Config{add});
+
+    config($Config{config_file}, JSON::PP->new->ascii->pretty->encode(\%Config));
+
+    exit;
+}
+
+my $json_config = config($Config{config_file});
+%Config = %{$json_config} if defined $json_config;
+
+if ($Config{host} eq $Config{vhost}{default}{host} && $Config{port} eq $Config{vhost}{default}{port}) {
+    die("Default bind address is the same as default vhost.");
+}
+
+say("tcp_server($Config{host}:$Config{port})") if ($ENV{HTTP_PROXY_LOG});
+my $server = tcp_server($Config{host}, $Config{port}, \&proxy_accept);
 
 sub proxy_accept {
     my ($fh, $host, $port) = @_;
 
+    say("proxy_accept($host:$port)") if ($ENV{HTTP_PROXY_LOG});
     my $browser = Browser->new($fh, $host, $port);
 }
 
@@ -362,4 +430,27 @@ sub dumper {
     $Data::Dumper::Useqq = 1;
 
     print Data::Dumper::Dumper(\@_);
+}
+
+sub config {
+    my ($file, $json) = @_;
+
+    if ($json) {
+        open(my $h, "> $file") or die("error: open: $file\n");
+        print($h $json);
+        close($file);
+
+        return(JSON::PP::decode_json($json));
+    }
+    else {
+        unless (-f $file) {
+            return(undef);
+        }
+
+        open(my $h, $file) or die("error: open: $file\n");
+        my $text = join("", <$h>);
+        close($file);
+
+        return(JSON::PP::decode_json($text));
+    }
 }
