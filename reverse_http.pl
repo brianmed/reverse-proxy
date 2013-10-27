@@ -391,22 +391,22 @@ GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s");
 
 if ($Config{add}) {
     my $json_config = config($Config{config_file});
-    %{$Config{vhost}} = %{$json_config->{vhost}} if defined $json_config;
 
-    if ($Config{add} =~ m#^vhost:(?<vhost>[^=]+)=(?<host>[^:]+):(?<port>\d+)#) {
+    my $add = delete($Config{add});
+    %Config = %{$json_config} if defined $json_config;
+
+    if ($add =~ m#^vhost:(?<vhost>[^=]+)=(?<host>[^:]+):(?<port>\d+)#) {
         my ($vhost, $host, $port) = ($+{vhost}, $+{host}, $+{port});
 
         $Config{vhost}{$vhost}{host} = $host;
         $Config{vhost}{$vhost}{port} = $port;
     }
-    elsif ($Config{add} =~ m#^host:(?<host>.*)#) {
+    elsif ($add =~ m#^host:(?<host>.*)#) {
         $Config{host} = $+{host};
     }
-    elsif ($Config{add} =~ m#^port:(?<port>.*)#) {
+    elsif ($add =~ m#^port:(?<port>.*)#) {
         $Config{port} = $+{port};
     }
-
-    delete($Config{add});
 
     config($Config{config_file}, JSON::PP->new->ascii->pretty->encode(\%Config));
 
