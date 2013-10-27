@@ -19,7 +19,7 @@ has qw(content_length);
 has qw(keep_alive);
 
 sub DESTROY {
-    say("DESTROY: Backend");
+    # say("DESTROY: Backend");
 }
 
 sub new {
@@ -179,7 +179,13 @@ has qw(send_size);
 has qw(keep_alive);
 
 sub DESTROY {
-    say("DESTROY: Browser");
+    my ($browser) = @_;
+
+    # say("DESTROY: Browser");
+
+    if ($browser->backend) {
+        $browser->backend->destroy;
+    }
 }
 
 sub new {
@@ -195,6 +201,11 @@ sub new {
         },
         on_eof => sub {
             $browser->destroy;
+            if ($browser->backend) {
+                $browser->backend->destroy;
+
+                undef($browser->backend);
+            }
             undef($browser);
             AE::log info => "Done.";
         }, 
@@ -235,7 +246,7 @@ sub restart {
 }
 
 sub pipe_post {
-    my ($browser, $backend) = @_;
+    my ($browser) = @_;
 
     my $msg = $browser->rbuf;
     substr($browser->rbuf, 0) = "";
@@ -244,12 +255,13 @@ sub pipe_post {
     say(">>> " . $browser->content_length() . " " . $browser->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
     say("    >>> $msg") if $ENV{HTTP_PROXY_LOG};
 
-    $backend->push_write($msg);
+    $browser->backend->push_write($msg);
 
     if (0 == $browser->send_size) {
-        # Read response headers after sending POST
-        $backend->on_drain(sub { $backend->on_read(\&Backend::default_read) });
+        return 1;
     }
+
+    return 0;
 }
 sub default_read {
    my ($backend) = @_;
@@ -286,35 +298,46 @@ sub get_headers {
         }
         $h->setpos(0);
 
-        if ($browser->post) {
-            # Send POST headers to backend
-            $browser->backend->push_write(${ $browser->headers->string_ref });
-
-            # "pipe" POST data if avail, if not, then read backend headers
-            if ($browser->content_length) {
-                die;
-                $browser->backend->on_drain(sub { $browser->on_read(sub { shift->pipe_post }) });
-            }
-            else {
-                # $browser->backend->on_drain(sub { $browser->backend->push_read(line => sub { shift->get_headers(@_) }) });
-            }
-        }
-        else {
-            # Write the non post request
-            $browser->backend->push_write(${ $browser->headers->string_ref });
-
-            # Read response headers after sending request headers
-            # $browser->backend->on_drain(sub { $browser->backend->push_read(line => sub { shift->get_headers(@_) }) });
-        }
+        $browser->connect_backend;
     }
     elsif ($line && !$browser->headers_done) {
         print($h "$line$eol");
-        # $browser->push_read(line => sub { shift->get_headers(@_) });
     }
     else {
         die;
     }
 }
+
+sub connect_backend {
+    my ($browser) = @_;
+
+    tcp_connect(localhost => 8080, sub {
+        my $fh = shift or die "unable to connect: $!";
+        my $backend = Backend->new(fh => $fh, browser => $browser);
+
+        $backend->browser->parse_header;
+    });
+}
+
+sub parse_header {
+    my ($browser) = @_;
+
+    if ($browser->post) {
+        # Send POST headers to backend
+        $browser->stop_read;
+        $browser->backend->push_write(${ $browser->headers->string_ref });
+
+        # "pipe" POST data if avail, if not, then read backend headers
+        if ($browser->content_length) {
+            $browser->backend->on_drain(sub { $browser->unshift_read(sub { shift->pipe_post }) });
+        }
+    }
+    else {
+        # Write the non post request
+        $browser->backend->push_write(${ $browser->headers->string_ref });
+    }
+}
+
 
 package main;
 
@@ -332,10 +355,6 @@ sub proxy_accept {
     my ($fh, $host, $port) = @_;
 
     my $browser = Browser->new($fh, $host, $port);
-    tcp_connect(localhost => 8080, sub {
-        my $fh = shift or die "unable to connect: $!";
-        my $backend = Backend->new(fh => $fh, browser => $browser);
-    });
 }
 
 my $done = AnyEvent->condvar;
