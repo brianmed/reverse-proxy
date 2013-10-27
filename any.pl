@@ -173,7 +173,6 @@ use IO::String;
 has qw(backend);
 has qw(headers);
 has qw(headers_done);
-has qw(post);
 has qw(content_length);
 has qw(send_size);
 has qw(keep_alive);
@@ -222,7 +221,6 @@ sub init {
 
     $browser->headers(IO::String->new);
     $browser->headers_done(0);
-    $browser->post(0);
     $browser->content_length(undef);
     $browser->send_size(0);
     $browser->keep_alive(1);
@@ -245,7 +243,7 @@ sub restart {
     $backend->start_read;
 }
 
-sub pipe_post {
+sub pipe_browser_content {
     my ($browser) = @_;
 
     my $msg = $browser->rbuf;
@@ -284,9 +282,6 @@ sub get_headers {
 
         $h->setpos(0);
         while (<$h>) {
-            if (m#^POST .* HTTP#) {
-                $browser->post(1);
-            }
             if (/Content-Length: (\d+)/) {
                 $browser->content_length($1);
                 $browser->send_size($1);
@@ -322,14 +317,14 @@ sub connect_backend {
 sub parse_header {
     my ($browser) = @_;
 
-    if ($browser->post) {
-        # Send POST headers to backend
+    if ($browser->content_length) {
+        # Send headers to backend
         $browser->stop_read;
         $browser->backend->push_write(${ $browser->headers->string_ref });
 
-        # "pipe" POST data if avail, if not, then read backend headers
+        # "pipe" content data if avail, if not, then read backend headers
         if ($browser->content_length) {
-            $browser->backend->on_drain(sub { $browser->unshift_read(sub { shift->pipe_post }) });
+            $browser->backend->on_drain(sub { $browser->unshift_read(sub { shift->pipe_browser_content }) });
         }
     }
     else {
