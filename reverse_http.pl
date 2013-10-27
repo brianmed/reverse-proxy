@@ -173,7 +173,7 @@ use IO::String;
 has qw(backend);
 has qw(headers);
 has qw(headers_done);
-has qw(host);
+has qw(host_header);
 has qw(content_length);
 has qw(send_size);
 has qw(keep_alive);
@@ -222,7 +222,7 @@ sub init {
 
     $browser->headers(IO::String->new);
     $browser->headers_done(0);
-    $browser->host("");
+    $browser->host_header("");
     $browser->content_length(undef);
     $browser->send_size(0);
     $browser->keep_alive(1);
@@ -284,8 +284,10 @@ sub get_headers {
 
         $h->setpos(0);
         while (<$h>) {
-            if (/Host:\s+(.*)/) {
-                $browser->host($1);
+            if (/Host:\s+([\d\w\.-]+)/) {
+                my $tmp = $1;
+                $tmp =~ s#\015\012##;
+                $browser->host_header($tmp);
             }
             if (/Content-Length: (\d+)/) {
                 $browser->content_length($1);
@@ -313,15 +315,23 @@ sub connect_backend {
 
     my $vhosts = $main::Config{vhost};
 
-    my $host_header = $browser->host;
-    my $host = $vhosts->{default}{host};
-    my $port = $vhosts->{default}{port};
+    my $host_header = $browser->host_header;
+    my $host;
+    my $port;
 
-    foreach my $vhost (keys %vhosts) {
+    foreach my $vhost (keys %$vhosts) {
         if ($host_header eq $vhost) {
-            $host = $vhosts{$vhost}{host};
-            $port = $vhosts{$vhost}{port};
+            $host = $vhosts->{$vhost}{host};
+            $port = $vhosts->{$vhost}{port};
         }
+    }
+
+    if (!$host && !$port) {
+        if ($ENV{HTTP_PROXY_LOG}) {
+            say("Can't tcp_connect without a host and port: " . $host_header);
+        }
+
+        return;
     }
 
     tcp_connect($host => $port, sub {
@@ -368,6 +378,8 @@ use AnyEvent::Socket;
 use Getopt::Long;
 use JSON::PP;
 
+$| = 1;
+
 our %Config = (
     config_file => "reverse_http.json",
     host => "127.0.0.1",
@@ -377,13 +389,11 @@ our %Config = (
 
 GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s");
 
-if (!$Config{vhost}{default}) {
-    $Config{vhost}{default}{host} = "127.0.0.1";
-    $Config{vhost}{default}{port} = "8080";
-}
-
 if ($Config{add}) {
-    if ($Config{add} =~ m#^vhost:(?<vhost>[^:]+):(?<host>[^:]+):(?<port>\d+)#) {
+    my $json_config = config($Config{config_file});
+    %{$Config{vhost}} = %{$json_config->{vhost}} if defined $json_config;
+
+    if ($Config{add} =~ m#^vhost:(?<vhost>[^=]+)=(?<host>[^:]+):(?<port>\d+)#) {
         my ($vhost, $host, $port) = ($+{vhost}, $+{host}, $+{port});
 
         $Config{vhost}{$vhost}{host} = $host;
@@ -405,10 +415,6 @@ if ($Config{add}) {
 
 my $json_config = config($Config{config_file});
 %Config = %{$json_config} if defined $json_config;
-
-if ($Config{host} eq $Config{vhost}{default}{host} && $Config{port} eq $Config{vhost}{default}{port}) {
-    die("Default bind address is the same as default vhost.");
-}
 
 say("tcp_server($Config{host}:$Config{port})") if ($ENV{HTTP_PROXY_LOG});
 my $server = tcp_server($Config{host}, $Config{port}, \&proxy_accept);
