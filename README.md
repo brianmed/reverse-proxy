@@ -1,4 +1,4 @@
-net-http-proxy
+reverse-proxy
 ==============
 
 Reverse HTTP Proxy
