@@ -6,9 +6,7 @@ Reverse HTTP Proxy
 ## Features
 
    * HTTP reverse proxy (GET/POST)
-
    * WebSockets
-
    * VirtualHosts
 
 ## Installation
