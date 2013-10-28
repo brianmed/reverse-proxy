@@ -53,11 +53,8 @@ sub new {
 sub default_read {
    my ($backend) = @_;
  
-   # called each time we receive data but the read queue is empty
-   # simply start read the request
- 
    if ($backend->websocket) {
-       $backend->push_read(chunk => 1, \&pipe_websocket);
+       $backend->push_read(\&pipe_websocket);
    }
    else {
        $backend->push_read(line => \&get_headers);
@@ -116,8 +113,8 @@ sub get_headers {
 
             $backend->browser->on_drain(sub { 
                 my $browser = shift;
-                $browser->timeout(15);
-                $browser->backend->timeout(15);
+                $browser->timeout(60);
+                $browser->backend->timeout(60);
                 say("+++ Websocket pipe") if $ENV{HTTP_PROXY_LOG};
                 $browser->on_drain(undef);
                 $browser->backend->on_drain(undef);
@@ -134,8 +131,6 @@ sub get_headers {
     else {
         $backend->wtf_buffer($backend->wtf_buffer ."$line$eol");
     }
-
-    return(1);
 }
 
 sub pipe_websocket {
@@ -143,12 +138,9 @@ sub pipe_websocket {
 
     my $msg = $backend->rbuf;
     substr($backend->rbuf, 0) = "";
-
-    say(">>> [ws:brw] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
-
     $backend->browser->push_write($msg);
 
-    return(1);
+    say(">>> [ws:brw] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
 }
 
 sub pipe_body {
@@ -306,11 +298,9 @@ sub pipe_websocket {
     my $msg = $browser->rbuf;
     substr($browser->rbuf, 0) = "";
 
-    say(">>> [ws:bck] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
-
     $browser->backend->push_write($msg);
 
-    return(1);
+    say(">>> [ws:bck] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
 }
 
 sub pipe_browser_content {
@@ -335,11 +325,8 @@ sub pipe_browser_content {
 sub default_read {
    my ($browser) = @_;
  
-   # called each time we receive data but the read queue is empty
-   # simply start read the request
-
    if ($browser->websocket) {
-       $browser->push_read(chunk => 1, \&pipe_websocket);
+       $browser->push_read(\&pipe_websocket);
    }
    else {
        $browser->push_read(line => \&get_headers);
