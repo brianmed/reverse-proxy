@@ -15,9 +15,9 @@ Reverse HTTP Proxy
 
 ## Configuration
 
-    $ perl reverse_http.pl -add vhost:localhost:3152=127.0.0.1:8080
-    $ perl reverse_http.pl -add vhost:127.0.0.1:3152=127.0.0.1:8080
-    $ perl reverse_http.pl -add port:3152
+    $ perl rhttp.pl -add vhost:localhost:3152=127.0.0.1:8080
+    $ perl rhttp.pl -add vhost:127.0.0.1:3152=127.0.0.1:8080
+    $ perl rhttp.pl -add port:3152
 
     This allows for two vhosts that both point to 127.0.0.1 port 8080.  In
     addition, the reverse proxy listens on port 3152.
@@ -26,5 +26,5 @@ Reverse HTTP Proxy
 
 ## Running
 
-    $ perl reverse_http.pl
+    $ perl rhttp.pl
 
