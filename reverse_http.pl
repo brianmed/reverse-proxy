@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 package Backend;
 
 use strict;
@@ -180,8 +182,6 @@ sub pipe_body {
     else {
         say(">>> [w] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
         $browser->push_write($msg);
-
-        # $browser->on_drain(sub { $backend->push_read(sub { shift->pipe_body($browser) }) });
     }
 
     return 0;
