@@ -17,6 +17,7 @@ has qw(wtf_buffer);
 has qw(send_size);
 has qw(content_length);
 has qw(keep_alive);
+has qw(websocket);
 
 sub DESTROY {
     # say("DESTROY: Backend");
@@ -67,6 +68,7 @@ sub init {
     $backend->content_length(undef);
     $backend->wtf_buffer("");
     $backend->keep_alive(1);
+    $backend->websocket(0);
 }
 
 sub get_headers {
@@ -90,6 +92,10 @@ sub get_headers {
             if (/Connection: close/) {
                 $backend->keep_alive(0);
             }
+            if (/Sec-WebSocket-Accept/) {
+                $backend->websocket(1);
+                $backend->browser->websocket(1);
+            }
         }
         $h->setpos(0);
 
@@ -98,6 +104,22 @@ sub get_headers {
             # Send the response header, then "pipe" the content
             $backend->browser->push_write(${ $backend->headers->string_ref });
             $backend->browser->on_drain(sub { $backend->unshift_read(sub { shift->pipe_body($backend->browser) }) });  # Who sells see shores?
+        }
+        elsif ($backend->websocket && $backend->browser->websocket) {
+            $backend->browser->push_write(${ $backend->headers->string_ref });
+
+            $backend->stop_read;
+
+            $backend->browser->on_drain(sub { 
+                my $browser = shift;
+                $browser->timeout(60);
+                $browser->backend->timeout(60);
+                say("+++ Websocket pipe") if $ENV{HTTP_PROXY_LOG};
+                $browser->on_drain(undef);
+                $browser->backend->on_drain(undef);
+                $browser->on_read(\&Browser::pipe_websocket);
+                $browser->backend->on_read(\&Backend::pipe_websocket);
+            });
         }
         else {
             $backend->browser->push_write(${ $backend->headers->string_ref });
@@ -112,6 +134,17 @@ sub get_headers {
     }
 
     return(1);
+}
+
+sub pipe_websocket {
+    my ($backend) = @_;
+
+    my $msg = $backend->rbuf;
+    substr($backend->rbuf, 0) = "";
+
+    say(">>> [ws:brw] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+
+    $backend->browser->push_write($msg);
 }
 
 sub pipe_body {
@@ -177,6 +210,7 @@ has qw(host_header);
 has qw(content_length);
 has qw(send_size);
 has qw(keep_alive);
+has qw(websocket);
 
 sub DESTROY {
     my ($browser) = @_;
@@ -195,9 +229,27 @@ sub new {
     $browser = shift->SUPER::new(
         fh => $fh,
         timeout => 4,
+        on_timeout => sub {
+            my $h = $browser->headers;
+            $h->setpos(0);
+
+            my $line = <$h> || "";
+            $line =~ s#\015\012##;
+            chomp($line);
+
+            $line = $line ? " [$line]" : "";
+
+            AE::log error => "Operation timed out$line";
+
+            if ($browser->backend) {
+                $browser->backend->destroy;
+            }
+
+            $browser->destroy;
+        },
         on_error => sub {
             AE::log error => $_[2];
-            $_[0]->destroy;
+            $browser->destroy;
         },
         on_eof => sub {
             $browser->destroy;
@@ -226,6 +278,7 @@ sub init {
     $browser->content_length(undef);
     $browser->send_size(0);
     $browser->keep_alive(1);
+    $browser->websocket(0);
 }
 
 sub restart {
@@ -238,11 +291,20 @@ sub restart {
 
     $browser->on_drain(undef);
     $backend->on_drain(undef);
-    # $browser->on_read(\&Browser::default_read);
-    # $backend->on_read(\&Backend::default_read);
 
     $browser->start_read;
     $backend->start_read;
+}
+
+sub pipe_websocket {
+    my ($browser) = @_;
+
+    my $msg = $browser->rbuf;
+    substr($browser->rbuf, 0) = "";
+
+    say(">>> [ws:bck] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+
+    $browser->backend->push_write($msg);
 }
 
 sub pipe_browser_content {
@@ -284,7 +346,7 @@ sub get_headers {
 
         $h->setpos(0);
         while (<$h>) {
-            if (/Host:\s+([\d\w\.-]+)/) {
+            if (/Host:\s+([:\d\w\.-]+)/) {
                 my $tmp = $1;
                 $tmp =~ s#\015\012##;
                 $browser->host_header($tmp);
@@ -342,7 +404,7 @@ sub connect_backend {
 
             $backend->browser->parse_header;
         };
-        warn($@);
+        warn($@) if $@;
     });
 }
 
@@ -375,10 +437,13 @@ use feature qw(:5.10);
 
 use AnyEvent;
 use AnyEvent::Socket;
+use AnyEvent::Log;
 use Getopt::Long;
 use JSON::PP;
 
 $| = 1;
+
+$AnyEvent::Log::FILTER->level("info");
 
 our %Config = (
     config_file => "reverse_http.json",
