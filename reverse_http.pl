@@ -29,7 +29,7 @@ sub new {
     my $backend;
     $backend = shift->SUPER::new(
         fh => $ops{fh},
-        timeout => 4,
+        timeout => 45,
         on_error => sub {
             AE::log error => $_[2];
             $_[0]->destroy;
@@ -56,7 +56,12 @@ sub default_read {
    # called each time we receive data but the read queue is empty
    # simply start read the request
  
-   $backend->push_read(line => \&get_headers);
+   if ($backend->websocket) {
+       $backend->push_read(chunk => 1, \&pipe_websocket);
+   }
+   else {
+       $backend->push_read(line => \&get_headers);
+   }
 }
 
 sub init {
@@ -106,19 +111,16 @@ sub get_headers {
             $backend->browser->on_drain(sub { $backend->unshift_read(sub { shift->pipe_body($backend->browser) }) });  # Who sells see shores?
         }
         elsif ($backend->websocket && $backend->browser->websocket) {
+            $backend->start_read;
             $backend->browser->push_write(${ $backend->headers->string_ref });
-
-            $backend->stop_read;
 
             $backend->browser->on_drain(sub { 
                 my $browser = shift;
-                $browser->timeout(60);
-                $browser->backend->timeout(60);
+                $browser->timeout(15);
+                $browser->backend->timeout(15);
                 say("+++ Websocket pipe") if $ENV{HTTP_PROXY_LOG};
                 $browser->on_drain(undef);
                 $browser->backend->on_drain(undef);
-                $browser->on_read(\&Browser::pipe_websocket);
-                $browser->backend->on_read(\&Backend::pipe_websocket);
             });
         }
         else {
@@ -145,6 +147,8 @@ sub pipe_websocket {
     say(">>> [ws:brw] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
 
     $backend->browser->push_write($msg);
+
+    return(1);
 }
 
 sub pipe_body {
@@ -228,7 +232,7 @@ sub new {
     my $browser;
     $browser = shift->SUPER::new(
         fh => $fh,
-        timeout => 4,
+        timeout => 45,
         on_timeout => sub {
             my $h = $browser->headers;
             $h->setpos(0);
@@ -305,6 +309,8 @@ sub pipe_websocket {
     say(">>> [ws:bck] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
 
     $browser->backend->push_write($msg);
+
+    return(1);
 }
 
 sub pipe_browser_content {
@@ -325,15 +331,20 @@ sub pipe_browser_content {
 
     return 0;
 }
+
 sub default_read {
-   my ($backend) = @_;
+   my ($browser) = @_;
  
    # called each time we receive data but the read queue is empty
    # simply start read the request
- 
-   $backend->push_read(line => \&get_headers);
-}
 
+   if ($browser->websocket) {
+       $browser->push_read(chunk => 1, \&pipe_websocket);
+   }
+   else {
+       $browser->push_read(line => \&get_headers);
+   }
+}
 
 sub get_headers {
     my ($browser, $line, $eol) = @_;
