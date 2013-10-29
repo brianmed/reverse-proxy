@@ -444,7 +444,7 @@ $| = 1;
 $AnyEvent::Log::FILTER->level("info");
 
 our %Config = (
-    config_file => "reverse_http.json",
+    config_file => "rhttp.json",
     host => "127.0.0.1",
     port => "80",
     vhost => {},
