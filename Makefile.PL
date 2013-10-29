@@ -3,6 +3,7 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
   NAME => 'rhttp',
   ABSTRACT => "Reverse HTTP Proxy",
+  DISTNAME => "App-rhttp",
   VERSION_FROM => 'rhttp.pl',
   AUTHOR => 'Brian Medley <bpmedley@cpan.org>',
   LICENSE => 'perl',
@@ -17,5 +18,5 @@ WriteMakefile(
   test => {
     TESTS => 't/*.t',
   },
-  EXE_FILES => ['rhttp.pl'],
+  EXE_FILES => ['bin/rhttp.pl'],
 );
