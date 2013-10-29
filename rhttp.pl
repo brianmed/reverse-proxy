@@ -450,7 +450,7 @@ our %Config = (
     vhost => {},
 );
 
-GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s");
+GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s") or exit;
 
 if ($Config{add}) {
     my $json_config = config($Config{config_file});
