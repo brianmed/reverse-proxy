@@ -29,6 +29,11 @@ sub new {
     my ($self, %ops) = @_;
 
     my $backend;
+    my %tls = ();
+    if ($ops{vhost}{tls}) {
+        $tls{tls} = "connect";
+        $tls{tls_ctx} = { verify => 1, verify_peername => "https" };
+    }
     $backend = shift->SUPER::new(
         fh => $ops{fh},
         timeout => 45,
@@ -42,6 +47,7 @@ sub new {
             AE::log info => "Done.";
         }, 
         on_read => \&default_read,
+        %tls
     );
 
     $backend->browser(delete $ops{browser});
@@ -221,6 +227,14 @@ sub DESTROY {
 sub new {
     my ($self, $fh, $host, $port) = @_;
 
+    my %tls = ();
+    if ($main::Config{cert_file}) {
+        if ($main::Config{listen}{"${host}:$port"}{tls}) {
+            $tls{tls} = "accept";
+            $tls{tls_ctx} = { cert_file => $main::Config{cert_file} };
+        }
+    }
+
     my $browser;
     $browser = shift->SUPER::new(
         fh => $fh,
@@ -258,6 +272,7 @@ sub new {
             AE::log info => "Done.";
         }, 
         on_read => \&default_read,
+        %tls,
     );
 
     $browser->init;
@@ -378,11 +393,13 @@ sub connect_backend {
     my $host_header = $browser->host_header;
     my $host;
     my $port;
+    my $vhost;
 
-    foreach my $vhost (keys %$vhosts) {
-        if ($host_header eq $vhost) {
-            $host = $vhosts->{$vhost}{host};
-            $port = $vhosts->{$vhost}{port};
+    foreach my $key (keys %$vhosts) {
+        if ($host_header eq $key) {
+            $host = $vhosts->{$key}{host};
+            $port = $vhosts->{$key}{port};
+            $vhost = $vhosts->{$key};
         }
     }
 
@@ -398,7 +415,7 @@ sub connect_backend {
         eval {
             my $fh = shift or die "unable to connect: [$host:$port]: $!";
             say("tcp_connect($_[0]:$_[1])") if ($ENV{HTTP_PROXY_LOG});
-            my $backend = Backend->new(fh => $fh, browser => $browser);
+            my $backend = Backend->new(fh => $fh, browser => $browser, vhost => $vhost);
 
             $backend->browser->parse_header;
         };
@@ -447,12 +464,12 @@ $AnyEvent::Log::FILTER->level("info");
 
 our %Config = (
     config_file => "rhttp.json",
-    host => "127.0.0.1",
-    port => "80",
+    cert_file => "",
     vhost => {},
+    listen => {}
 );
 
-GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s") or exit;
+GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s", "del=s") or exit;
 
 if ($Config{add}) {
     my $json_config = config($Config{config_file});
@@ -460,17 +477,63 @@ if ($Config{add}) {
     my $add = delete($Config{add});
     %Config = %{$json_config} if defined $json_config;
 
-    if ($add =~ m#^vhost:(?<vhost>[^=]+)=(?<host>[^:]+):(?<port>\d+)#) {
-        my ($vhost, $host, $port) = ($+{vhost}, $+{host}, $+{port});
+    if ($add =~ m#^vhost:(?<vhost>[^=]+)=(?<host>[^:]+):(?<port>\d+):tls_(?<tls>off|on)#) {
+        my ($vhost, $host, $port, $tls) = ($+{vhost}, $+{host}, $+{port}, $+{tls});
 
         $Config{vhost}{$vhost}{host} = $host;
         $Config{vhost}{$vhost}{port} = $port;
+        $Config{vhost}{$vhost}{tls} = "off" eq $tls ? 0 : 1;
+    }
+    elsif ($add =~ m#^listen:(?<ip>[^:]+):(?<port>\d+):tls_(?<tls>off|on)#) {
+        my ($ip, $port, $tls) = ($+{ip}, $+{port}, $+{tls});
+
+        $Config{listen}{"${ip}:$port"} = {ip => $ip, port => $port, tls => "off" eq $tls ? 0 : 1 };
     }
     elsif ($add =~ m#^host:(?<host>.*)#) {
         $Config{host} = $+{host};
     }
     elsif ($add =~ m#^port:(?<port>.*)#) {
         $Config{port} = $+{port};
+    }
+    elsif ($add =~ m#^cert_file:(?<cert_file>.*)#) {
+        $Config{cert_file} = $+{cert_file};
+    }
+    else {
+        die("Unknown -add option ($add)\n");
+    }
+
+    config($Config{config_file}, JSON::PP->new->ascii->pretty->encode(\%Config));
+
+    exit;
+}
+
+if ($Config{del}) {
+    my $json_config = config($Config{config_file});
+
+    my $del = delete($Config{del});
+    %Config = %{$json_config} if defined $json_config;
+
+    if ($del =~ m#^vhost:(?<vhost>\S+)#) {
+        my ($vhost) = ($+{vhost});
+
+        if ($Config{vhost}{$vhost}) {
+            delete($Config{vhost}{$vhost});
+        }
+        else {
+            die("No vhost config found for ($vhost)\n");
+        }
+    }
+    elsif ($del =~ m#^listen:(?<ip>[^:]+):(?<port>\d+)#) {
+        my ($ip, $port) = ($+{host}, $+{port});
+
+        my $listen = "${ip}:$port";
+
+        if ($Config{listen}{$listen}) {
+            delete($Config{listen}{$listen});
+        }
+        else {
+            die("No listen config found for ($listen)\n");
+        }
     }
 
     config($Config{config_file}, JSON::PP->new->ascii->pretty->encode(\%Config));
@@ -481,8 +544,26 @@ if ($Config{add}) {
 my $json_config = config($Config{config_file});
 %Config = %{$json_config} if defined $json_config;
 
-say("tcp_server($Config{host}:$Config{port})") if ($ENV{HTTP_PROXY_LOG});
-my $server = tcp_server($Config{host}, $Config{port}, \&proxy_accept);
+if (0 == keys %{$Config{vhost}} || 0 == keys %{$Config{listen}}) {
+    warn("Please configure rhttp.pl.\n");
+    warn("Possibly:\n\n");
+
+    warn("\$ perl rhttp.pl -add vhost:domain.com:80=127.0.0.1:3001:tls_off\n");
+    warn("\$ perl rhttp.pl -add vhost:domain.com=127.0.0.1:3001:tls_off\n");
+    warn("\$ perl rhttp.pl -add listen:192.168.10.12:80:tls_oiff\n");
+    warn("\$ perl rhttp.pl -add listen:192.168.10.12:443:tls_on\n");
+
+    exit;
+}
+
+my %server = ();
+
+foreach my $listen (sort keys %{$Config{listen}}) {
+    my ($host, $port) = split(/:/, $listen);
+
+    say("tcp_server($host:$port)") if ($ENV{HTTP_PROXY_LOG});
+    $server{$listen} = tcp_server($host, $port, \&proxy_accept);
+}
 
 sub proxy_accept {
     my ($fh, $host, $port) = @_;
