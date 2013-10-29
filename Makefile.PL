@@ -4,7 +4,7 @@ WriteMakefile(
   NAME => 'rhttp',
   ABSTRACT => "Reverse HTTP Proxy",
   DISTNAME => "App-rhttp",
-  VERSION_FROM => 'rhttp.pl',
+  VERSION_FROM => 'bin/rhttp.pl',
   AUTHOR => 'Brian Medley <bpmedley@cpan.org>',
   LICENSE => 'perl',
   PREREQ_PM => {
