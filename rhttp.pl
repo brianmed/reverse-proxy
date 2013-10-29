@@ -439,6 +439,8 @@ use AnyEvent::Log;
 use Getopt::Long;
 use JSON::PP;
 
+our $VERSION = "0.01";
+
 $| = 1;
 
 $AnyEvent::Log::FILTER->level("info");
@@ -523,3 +525,70 @@ sub config {
         return(JSON::PP::decode_json($text));
     }
 }
+
+__END__
+
+
+=pod
+
+=head1 NAME
+
+rhttp.pl - Reverse HTTP Proxy
+
+=head1 SYNOPSIS
+
+B<rhttp.pl>
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-config>
+
+Which config file to use.
+
+=item B<-add>
+
+Modify stored config file.  See below.
+
+=item B<-host>
+
+IP to listen on.  Can be set in config file.
+
+=item B<-port>
+
+Port to listen on.  Can be set in config file.
+
+=back
+
+=head1 DESCRIPTION
+
+This is a reverse http proxy that supports:
+
+    HTTP reverse proxy (GET/POST)
+
+    WebSockets
+
+    VirtualHosts
+
+=head1 EXAMPLES
+
+Run a reverse http proxy on domain.com and domain.net that routes to
+127.0.0.1:3001 and 127.0.0.1:3002.  The proxy will listen on ip 192.168.10.12.
+
+    $ perl rhttp.pl -add vhost:infoservant.com=127.0.0.1:3002
+    $ perl rhttp.pl -add vhost:infoservant.com:80=127.0.0.1:3002
+    $ perl rhttp.pl -add vhost:bmedley.org:80=127.0.0.1:3001
+    $ perl rhttp.pl -add vhost:bmedley.org=127.0.0.1:3001
+    $ perl rhttp.pl -add host:192.168.10.12
+    $ perl rhttp.pl
+
+=head1 NOTES
+
+This program is considered beta.
+
+=head1 AUTHOR
+ 
+Brian Medley - C<bpmedley@cpan.org>
+
+=cut
