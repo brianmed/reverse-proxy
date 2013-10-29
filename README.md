@@ -8,6 +8,7 @@ Reverse HTTP Proxy
    * HTTP reverse proxy (GET/POST)
    * WebSockets
    * VirtualHosts
+   * SSL
 
 ## Installation
 
@@ -15,12 +16,12 @@ Reverse HTTP Proxy
 
 ## Configuration
 
-    $ perl rhttp.pl -add vhost:localhost:3152=127.0.0.1:8080
-    $ perl rhttp.pl -add vhost:127.0.0.1:3152=127.0.0.1:8080
-    $ perl rhttp.pl -add port:3152
+    $ perl rhttp.pl -add vhost:localhost=127.0.0.1:3001:tls_off
+    $ perl rhttp.pl -add vhost:127.0.0.1:80=127.0.0.1:3001:tls_off
+    $ perl rhttp.pl -add listen:127.0.0.1:80
 
-    This allows for two vhosts that both point to 127.0.0.1 port 8080.  In
-    addition, the reverse proxy listens on port 3152.
+    This allows for two vhosts that both point to 127.0.0.1 port 3001.  In
+    addition, the reverse proxy listens on port 80.
 
     The vhost is basically a string match against the Host: header field.
 

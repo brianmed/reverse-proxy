@@ -32,7 +32,6 @@ sub new {
     my %tls = ();
     if ($ops{vhost}{tls}) {
         $tls{tls} = "connect";
-        $tls{tls_ctx} = { verify => 1, verify_peername => "https" };
     }
     $backend = shift->SUPER::new(
         fh => $ops{fh},
@@ -231,7 +230,7 @@ sub new {
     if ($main::Config{cert_file}) {
         if ($main::Config{listen}{"${host}:$port"}{tls}) {
             $tls{tls} = "accept";
-            $tls{tls_ctx} = { cert_file => $main::Config{cert_file} };
+            $tls{tls_ctx} = { cert_file => $main::Config{cert_file}, key_file => $main::Config{key_file} };
         }
     }
 
@@ -247,7 +246,7 @@ sub new {
             $line =~ s#\015\012##;
             chomp($line);
 
-            $line = $line ? " [$line]" : "";
+            $line = $line && !$tls{tls} ? " [$line]" : "";
 
             AE::log error => "Operation timed out$line";
 
@@ -414,7 +413,7 @@ sub connect_backend {
     tcp_connect($host => $port, sub {
         eval {
             my $fh = shift or die "unable to connect: [$host:$port]: $!";
-            say("tcp_connect($_[0]:$_[1])") if ($ENV{HTTP_PROXY_LOG});
+            say("tcp_connect($_[0]:$_[1]) [$$vhost{tls}]") if ($ENV{HTTP_PROXY_LOG});
             my $backend = Backend->new(fh => $fh, browser => $browser, vhost => $vhost);
 
             $backend->browser->parse_header;
@@ -465,6 +464,7 @@ $AnyEvent::Log::FILTER->level("info");
 our %Config = (
     config_file => "rhttp.json",
     cert_file => "",
+    key_file => "",
     vhost => {},
     listen => {}
 );
@@ -497,6 +497,9 @@ if ($Config{add}) {
     }
     elsif ($add =~ m#^cert_file:(?<cert_file>.*)#) {
         $Config{cert_file} = $+{cert_file};
+    }
+    elsif ($add =~ m#^key_file:(?<key_file>.*)#) {
+        $Config{key_file} = $+{key_file};
     }
     else {
         die("Unknown -add option ($add)\n");
@@ -561,15 +564,16 @@ my %server = ();
 foreach my $listen (sort keys %{$Config{listen}}) {
     my ($host, $port) = split(/:/, $listen);
 
-    say("tcp_server($host:$port)") if ($ENV{HTTP_PROXY_LOG});
-    $server{$listen} = tcp_server($host, $port, \&proxy_accept);
-}
+    say("tcp_server($host:$port) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{HTTP_PROXY_LOG});
+    $server{$listen} = tcp_server($host, $port, sub {
+        my ($fh, $peerhost, $peerport) = @_;
 
-sub proxy_accept {
-    my ($fh, $host, $port) = @_;
+        my $listen = "${host}:$port";
 
-    say("proxy_accept($host:$port)") if ($ENV{HTTP_PROXY_LOG});
-    my $browser = Browser->new($fh, $host, $port);
+        say("proxy_accept($peerhost:$peerport) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{HTTP_PROXY_LOG});
+
+        Browser->new($fh, $host, $port);
+    });
 }
 
 my $done = AnyEvent->condvar;
@@ -632,6 +636,10 @@ Which config file to use.
 
 Modify stored config file.  See below.
 
+=item B<-del>
+
+Modify stored config file.  See below.
+
 =item B<-host>
 
 IP to listen on.  Can be set in config file.
@@ -640,29 +648,42 @@ IP to listen on.  Can be set in config file.
 
 Port to listen on.  Can be set in config file.
 
+=item B<-cert_file>
+
+SSL cert file
+
+=item B<-key_file>
+
+SSL key file
+
 =back
 
 =head1 DESCRIPTION
 
 This is a reverse http proxy that supports:
 
-    HTTP reverse proxy (GET/POST)
+    HTTP/HTTPS reverse proxy (GET/POST)
 
     WebSockets
 
     VirtualHosts
+
+    SSL
 
 =head1 EXAMPLES
 
 Run a reverse http proxy on domain.com and domain.net that routes to
 127.0.0.1:3001 and 127.0.0.1:3002.  The proxy will listen on ip 192.168.10.12.
 
-    $ perl rhttp.pl -add vhost:infoservant.com=127.0.0.1:3002
-    $ perl rhttp.pl -add vhost:infoservant.com:80=127.0.0.1:3002
-    $ perl rhttp.pl -add vhost:bmedley.org:80=127.0.0.1:3001
-    $ perl rhttp.pl -add vhost:bmedley.org=127.0.0.1:3001
-    $ perl rhttp.pl -add host:192.168.10.12
+    $ perl rhttp.pl -add vhost:domain.com:80=127.0.0.1:3001:tls_off
+    $ perl rhttp.pl -add vhost:domain.com=127.0.0.1:3001:tls_off
+    $ perl rhttp.pl -add vhost:localhost=127.0.0.1:3001:tls_off
+    $ perl rhttp.pl -add vhost:127.0.0.1:80=127.0.0.1:3001:tls_off
+    $ perl rhttp.pl -add listen:127.0.0.1:80
     $ perl rhttp.pl
+
+    $ perl rhttp.pl -del vhost:localhost
+    $ perl rhttp.pl -del listen:127.0.0.1:80
 
 =head1 NOTES
 
