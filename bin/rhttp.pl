@@ -35,7 +35,12 @@ sub new {
     }
     $backend = shift->SUPER::new(
         fh => $ops{fh},
-        timeout => 45,
+        timeout => 30,
+        on_timeout => sub {
+            AE::log error => "Operation timed out";
+
+            $backend->destroy;
+        },
         on_error => sub {
             AE::log error => $_[2];
             $_[0]->destroy;
@@ -92,7 +97,7 @@ sub get_headers {
 
         $h->setpos(0);
         while (<$h>) {
-            print(">>> $_") if ($ENV{HTTP_PROXY_LOG});
+            print(">>> $_") if ($ENV{RHTTP_PROXY_LOG});
 
             if (/Content-Length: (\d+)/) {
                 $backend->content_length($1);
@@ -122,7 +127,7 @@ sub get_headers {
                 my $browser = shift;
                 $browser->timeout(60);
                 $browser->backend->timeout(60);
-                say("+++ Websocket pipe") if $ENV{HTTP_PROXY_LOG};
+                say("+++ Websocket pipe") if $ENV{RHTTP_PROXY_LOG};
                 $browser->on_drain(undef);
                 $browser->backend->on_drain(undef);
             });
@@ -147,7 +152,7 @@ sub pipe_websocket {
     substr($backend->rbuf, 0) = "";
     $backend->browser->push_write($msg);
 
-    say(">>> [ws:brw] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+    say(">>> [ws:brw] " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
 }
 
 sub pipe_body {
@@ -160,7 +165,7 @@ sub pipe_body {
     if ($backend->wtf_buffer) {
         $browser->push_write($backend->wtf_buffer);
         $backend->send_size($backend->send_size - length($backend->wtf_buffer));
-        say(">>> [f] " . $backend->content_length() . " " . $backend->send_size() . " " . length($backend->wtf_buffer)) if $ENV{HTTP_PROXY_LOG};
+        say(">>> [f] " . $backend->content_length() . " " . $backend->send_size() . " " . length($backend->wtf_buffer)) if $ENV{RHTTP_PROXY_LOG};
         $backend->wtf_buffer(undef);
     }
 
@@ -170,7 +175,7 @@ sub pipe_body {
     $backend->send_size($backend->send_size - length($msg));
 
     if (0 == $backend->send_size) {
-        say(">>> [s] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+        say(">>> [s] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
         $browser->stop_read;
         $backend->stop_read;
         $browser->push_write($msg);
@@ -185,7 +190,7 @@ sub pipe_body {
         return 1;
     }
     else {
-        say(">>> [w] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+        say(">>> [w] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
         $browser->push_write($msg);
     }
 
@@ -237,7 +242,7 @@ sub new {
     my $browser;
     $browser = shift->SUPER::new(
         fh => $fh,
-        timeout => 45,
+        timeout => 30,
         on_timeout => sub {
             my $h = $browser->headers;
             $h->setpos(0);
@@ -294,7 +299,7 @@ sub init {
 sub restart {
     my ($browser, $backend) = @_;
 
-    say("===") if $ENV{HTTP_PROXY_LOG};
+    say("===") if $ENV{RHTTP_PROXY_LOG};
 
     $backend->init;
     $browser->init;
@@ -314,7 +319,7 @@ sub pipe_websocket {
 
     $browser->backend->push_write($msg);
 
-    say(">>> [ws:bck] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+    say(">>> [ws:bck] " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
 }
 
 sub pipe_browser_content {
@@ -324,8 +329,8 @@ sub pipe_browser_content {
     substr($browser->rbuf, 0) = "";
 
     $browser->send_size($browser->send_size - length($msg));
-    say(">>> " . $browser->content_length() . " " . $browser->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
-    say("    >>> $msg") if $ENV{HTTP_PROXY_LOG};
+    say(">>> " . $browser->content_length() . " " . $browser->send_size() . " " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
+    say("    >>> $msg") if $ENV{RHTTP_PROXY_LOG};
 
     $browser->backend->push_write($msg);
 
@@ -370,7 +375,7 @@ sub get_headers {
             if (/Connection: close/) {
                 $browser->keep_alive(0);
             }
-            print("<<< $_") if ($ENV{HTTP_PROXY_LOG});
+            print("<<< $_") if ($ENV{RHTTP_PROXY_LOG});
         }
         $h->setpos(0);
 
@@ -395,6 +400,21 @@ sub connect_backend {
     my $vhost;
 
     foreach my $key (keys %$vhosts) {
+        if ($key =~ m/^dbi/) {
+            my $config = DBX->vhost($key, $host_header);
+            if ($config) {
+                my ($tls);
+
+                ($host, $port, $tls) = split(/:/, $config);
+
+                $vhost = {};
+                $$vhost{host} = $host;
+                $$vhost{port} = $port;
+                $$vhost{tls} = $tls;
+                
+                last;
+            }
+        }
         if ($host_header eq $key) {
             $host = $vhosts->{$key}{host};
             $port = $vhosts->{$key}{port};
@@ -403,7 +423,7 @@ sub connect_backend {
     }
 
     if (!$host && !$port) {
-        if ($ENV{HTTP_PROXY_LOG}) {
+        if ($ENV{RHTTP_PROXY_LOG}) {
             say("Can't tcp_connect without a host and port: " . $host_header);
         }
 
@@ -413,13 +433,13 @@ sub connect_backend {
     tcp_connect($host => $port, sub {
         eval {
             my $fh = shift or die "unable to connect: [$host:$port]: $!";
-            say("tcp_connect($_[0]:$_[1]) [$$vhost{tls}]") if ($ENV{HTTP_PROXY_LOG});
+            say("tcp_connect($_[0]:$_[1]) [$$vhost{tls}]") if ($ENV{RHTTP_PROXY_LOG});
             my $backend = Backend->new(fh => $fh, browser => $browser, vhost => $vhost);
 
             $backend->browser->parse_header;
         };
         warn($@) if $@;
-    });
+    }) unless $browser->backend;
 }
 
 sub parse_header {
@@ -441,6 +461,33 @@ sub parse_header {
     }
 }
 
+package DBX;
+
+use DBIx::Connector;
+
+sub vhost {
+    my ($self, $dsn, $header) = @_;
+
+    state $conn = {};
+    
+    $$conn{$dsn} //= DBIx::Connector->new($dsn, undef, undef, {
+        RaiseError => 1,
+        PrintError => 0,
+        AutoCommit => 0,
+        pg_server_prepare => 0,
+        pg_enable_utf8 => 1,
+    });
+
+    my $sql = "SELECT config FROM vhost WHERE header = ?";
+
+    my $ret = $$conn{$dsn}->dbh()->selectcol_arrayref($sql, undef, $header);
+    if ($ret && $$ret[0]) {
+        return($$ret[0]);
+    }
+    else {
+        return(undef);
+    }
+}
 
 package main;
 
@@ -469,6 +516,8 @@ our %Config = (
     listen => {}
 );
 
+# load balancer with round-robin, least-connected
+
 GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s", "del=s") or exit;
 
 if ($Config{add}) {
@@ -483,6 +532,11 @@ if ($Config{add}) {
         $Config{vhost}{$vhost}{host} = $host;
         $Config{vhost}{$vhost}{port} = $port;
         $Config{vhost}{$vhost}{tls} = "off" eq $tls ? 0 : 1;
+    }
+    elsif ($add =~ m#^vhost:dsn:(?<dsn>.*)#) {
+        my ($dsn) = ($+{dsn});
+
+        $Config{vhost}{$dsn} = 1;
     }
     elsif ($add =~ m#^listen:(?<ip>[^:]+):(?<port>\d+):tls_(?<tls>off|on)#) {
         my ($ip, $port, $tls) = ($+{ip}, $+{port}, $+{tls});
@@ -525,8 +579,7 @@ if ($Config{del}) {
         else {
             die("No vhost config found for ($vhost)\n");
         }
-    }
-    elsif ($del =~ m#^listen:(?<ip>[^:]+):(?<port>\d+)#) {
+    } elsif ($del =~ m#^listen:(?<ip>[^:]+):(?<port>\d+)#) {
         my ($ip, $port) = ($+{host}, $+{port});
 
         my $listen = "${ip}:$port";
@@ -564,13 +617,13 @@ my %server = ();
 foreach my $listen (sort keys %{$Config{listen}}) {
     my ($host, $port) = split(/:/, $listen);
 
-    say("tcp_server($host:$port) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{HTTP_PROXY_LOG});
+    say("tcp_server($host:$port) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{RHTTP_PROXY_LOG});
     $server{$listen} = tcp_server($host, $port, sub {
         my ($fh, $peerhost, $peerport) = @_;
 
         my $listen = "${host}:$port";
 
-        say("proxy_accept($peerhost:$peerport) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{HTTP_PROXY_LOG});
+        say("proxy_accept($peerhost:$peerport) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{RHTTP_PROXY_LOG});
 
         Browser->new($fh, $host, $port);
     });
