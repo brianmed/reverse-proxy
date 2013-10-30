@@ -1,13 +1,65 @@
 #!/usr/bin/env perl
 
+package Base;
+
+use Modern::Perl;
+use Carp qw();
+
+# Kudos to Mojo::Base
+
+sub import {
+    my $class = shift;
+
+    my $caller = caller;
+    no strict 'refs';
+    *{"${caller}::has"} = sub { attr($caller, @_) };
+}
+
+sub attr {
+    my ($class, $attrs, $default) = @_;
+    return unless ($class = ref $class || $class) && $attrs;
+
+    Carp::croak 'Default has to be a code reference or constant value'
+    if ref $default && ref $default ne 'CODE';
+
+    for my $attr (@{ref $attrs eq 'ARRAY' ? $attrs : [$attrs]}) {
+        Carp::croak qq{Attribute "$attr" invalid} unless $attr =~ /^[a-zA-Z_]\w*$/;
+
+        # Header (check arguments)
+        my $code = "package $class;\nsub $attr {\n  if (\@_ == 1) {\n";
+
+        # No default value (return value)
+        unless (defined $default) { $code .= "    return \$_[0]{'$attr'};" }
+
+        # Default value
+        else {
+            # Return value
+            $code .= "    return \$_[0]{'$attr'} if exists \$_[0]{'$attr'};\n";
+
+            # Return default value
+            $code .= "    return \$_[0]{'$attr'} = ";
+            $code .= ref $default eq 'CODE' ? '$default->($_[0]);' : '$default;';
+        }
+
+        # Store value
+        $code .= "\n  }\n  \$_[0]{'$attr'} = \$_[1];\n";
+
+        # Footer (return invocant)
+        $code .= "  \$_[0];\n}";
+
+        Carp::croak "error: $@" unless eval "$code;1";
+    }
+}
+
 package Backend;
 
 use strict;
 use warnings;
 
-use feature qw(:5.10);
-
-use Mojo::Base 'AnyEvent::Handle';
+our @ISA = qw(Base AnyEvent::Handle);
+BEGIN {
+    Base->import;
+}
 
 use AnyEvent::Socket;
 use IO::String;
@@ -202,9 +254,11 @@ package Browser;
 use strict;
 use warnings;
 
-use feature qw(:5.10);
+our @ISA = qw(Base AnyEvent::Handle);
+BEGIN {
+    Base->import;
+}
 
-use Mojo::Base 'AnyEvent::Handle';
 
 use AnyEvent::Socket;
 use IO::String;
@@ -522,15 +576,16 @@ package main;
 use strict;
 use warnings;
 
-use feature qw(:5.10);
+use Modern::Perl;
 
 use AnyEvent;
-use AnyEvent::Socket;
+use AnyEvent::Handle;
 use AnyEvent::Log;
+use AnyEvent::Socket;
 use Getopt::Long;
 use JSON::PP;
 
-our $VERSION = "0.02";
+our $VERSION = "0.03";
 
 $| = 1;
 
