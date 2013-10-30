@@ -530,7 +530,7 @@ use AnyEvent::Log;
 use Getopt::Long;
 use JSON::PP;
 
-our $VERSION = "0.01";
+our $VERSION = "0.02";
 
 $| = 1;
 
