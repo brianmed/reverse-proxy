@@ -469,6 +469,7 @@ sub vhost {
     my ($self, $dsn, $header) = @_;
 
     state $conn = {};
+    state $lb = {};
     
     $$conn{$dsn} //= DBIx::Connector->new($dsn, undef, undef, {
         RaiseError => 1,
@@ -478,15 +479,42 @@ sub vhost {
         pg_enable_utf8 => 1,
     });
 
-    my $sql = "SELECT config FROM vhost WHERE header = ?";
+    my $sql = "SELECT COUNT(config) FROM vhost WHERE header = ?";
+    my $count = col($$conn{$dsn}, $sql, undef, $header);
 
-    my $ret = $$conn{$dsn}->dbh()->selectcol_arrayref($sql, undef, $header);
+    if (!$$lb{$header} || $count != $$lb{$header}{count}) {
+        $$lb{$header} = {};
+        $$lb{$header}{count} = $count;
+        $$lb{$header}{offset} = 0;
+    }
+
+    my $offset = $$lb{$header}{offset};
+
+    $sql = "SELECT config FROM vhost WHERE header = ? ORDER BY config LIMIT 1 OFFSET $offset";
+
+    # It's a loadbalancer
+    ++$offset;
+    if ($offset >= $count) {
+        $$lb{$header}{offset} = 0;
+    }
+    else {
+        $$lb{$header}{offset} = $offset;
+    }
+    
+    return(col($$conn{$dsn}, $sql, undef, $header));
+}
+sub col {
+    my $conn = shift;
+    my $sql = shift;
+    my $attrs = shift;
+    my @vars = @_;
+
+    my $ret = $conn->dbh()->selectcol_arrayref($sql, $attrs, @vars);
     if ($ret && $$ret[0]) {
         return($$ret[0]);
     }
-    else {
-        return(undef);
-    }
+
+    return(undef);
 }
 
 package main;
