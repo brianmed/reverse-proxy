@@ -6,8 +6,11 @@ Reverse HTTP Proxy
 ## Features
 
    * HTTP reverse proxy (GET/POST)
+
    * WebSockets
-   * VirtualHosts
+
+   * VirtualHosts (JSON/DBI)
+
    * SSL
 
 ## Installation
@@ -18,6 +21,7 @@ Reverse HTTP Proxy
 
     $ perl rhttp.pl -add vhost:localhost=127.0.0.1:3001:tls_off
     $ perl rhttp.pl -add vhost:127.0.0.1:80=127.0.0.1:3001:tls_off
+    $ perl rhttp.pl -add vhost:dsn:dbi:Pg:dbname=rhttp
     $ perl rhttp.pl -add listen:127.0.0.1:80
 
     This allows for two vhosts that both point to 127.0.0.1 port 3001.  In
