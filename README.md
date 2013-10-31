@@ -5,13 +5,13 @@ Reverse HTTP Proxy
 
 ## Features
 
-   * HTTP reverse proxy (GET/POST)
+* HTTP reverse proxy (GET/POST)
 
-   * WebSockets
+* WebSockets
 
-   * VirtualHosts (JSON/DBI/LoadBalance)
+* VirtualHosts (JSON/DBI/LoadBalance)
 
-   * SSL
+* SSL
 
 ## Installation
 
