@@ -9,7 +9,9 @@ Reverse HTTP Proxy
 
 * WebSockets
 
-* VirtualHosts (JSON/DBI/LoadBalance)
+* VirtualHosts (JSON/DBI)
+
+* Loadbalancer
 
 * SSL
 
