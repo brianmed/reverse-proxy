@@ -29,3 +29,6 @@ Reverse HTTP Proxy
 
     $ perl rhttp.pl
 
+## Other
+
+    Use nginx - it's better
