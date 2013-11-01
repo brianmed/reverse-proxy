@@ -1,13 +1,65 @@
 #!/usr/bin/env perl
 
+package Base;
+
+use Modern::Perl;
+use Carp qw();
+
+# Kudos to Mojo::Base
+
+sub import {
+    my $class = shift;
+
+    my $caller = caller;
+    no strict 'refs';
+    *{"${caller}::has"} = sub { attr($caller, @_) };
+}
+
+sub attr {
+    my ($class, $attrs, $default) = @_;
+    return unless ($class = ref $class || $class) && $attrs;
+
+    Carp::croak 'Default has to be a code reference or constant value'
+    if ref $default && ref $default ne 'CODE';
+
+    for my $attr (@{ref $attrs eq 'ARRAY' ? $attrs : [$attrs]}) {
+        Carp::croak qq{Attribute "$attr" invalid} unless $attr =~ /^[a-zA-Z_]\w*$/;
+
+        # Header (check arguments)
+        my $code = "package $class;\nsub $attr {\n  if (\@_ == 1) {\n";
+
+        # No default value (return value)
+        unless (defined $default) { $code .= "    return \$_[0]{'$attr'};" }
+
+        # Default value
+        else {
+            # Return value
+            $code .= "    return \$_[0]{'$attr'} if exists \$_[0]{'$attr'};\n";
+
+            # Return default value
+            $code .= "    return \$_[0]{'$attr'} = ";
+            $code .= ref $default eq 'CODE' ? '$default->($_[0]);' : '$default;';
+        }
+
+        # Store value
+        $code .= "\n  }\n  \$_[0]{'$attr'} = \$_[1];\n";
+
+        # Footer (return invocant)
+        $code .= "  \$_[0];\n}";
+
+        Carp::croak "error: $@" unless eval "$code;1";
+    }
+}
+
 package Backend;
 
 use strict;
 use warnings;
 
-use feature qw(:5.10);
-
-use Mojo::Base 'AnyEvent::Handle';
+our @ISA = qw(Base AnyEvent::Handle);
+BEGIN {
+    Base->import;
+}
 
 use AnyEvent::Socket;
 use IO::String;
@@ -35,7 +87,12 @@ sub new {
     }
     $backend = shift->SUPER::new(
         fh => $ops{fh},
-        timeout => 45,
+        timeout => 30,
+        on_timeout => sub {
+            AE::log error => "Operation timed out";
+
+            $backend->destroy;
+        },
         on_error => sub {
             AE::log error => $_[2];
             $_[0]->destroy;
@@ -92,7 +149,7 @@ sub get_headers {
 
         $h->setpos(0);
         while (<$h>) {
-            print(">>> $_") if ($ENV{HTTP_PROXY_LOG});
+            print(">>> $_") if ($ENV{RHTTP_PROXY_LOG});
 
             if (/Content-Length: (\d+)/) {
                 $backend->content_length($1);
@@ -122,7 +179,7 @@ sub get_headers {
                 my $browser = shift;
                 $browser->timeout(60);
                 $browser->backend->timeout(60);
-                say("+++ Websocket pipe") if $ENV{HTTP_PROXY_LOG};
+                say("+++ Websocket pipe") if $ENV{RHTTP_PROXY_LOG};
                 $browser->on_drain(undef);
                 $browser->backend->on_drain(undef);
             });
@@ -147,7 +204,7 @@ sub pipe_websocket {
     substr($backend->rbuf, 0) = "";
     $backend->browser->push_write($msg);
 
-    say(">>> [ws:brw] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+    say(">>> [ws:brw] " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
 }
 
 sub pipe_body {
@@ -160,7 +217,7 @@ sub pipe_body {
     if ($backend->wtf_buffer) {
         $browser->push_write($backend->wtf_buffer);
         $backend->send_size($backend->send_size - length($backend->wtf_buffer));
-        say(">>> [f] " . $backend->content_length() . " " . $backend->send_size() . " " . length($backend->wtf_buffer)) if $ENV{HTTP_PROXY_LOG};
+        say(">>> [f] " . $backend->content_length() . " " . $backend->send_size() . " " . length($backend->wtf_buffer)) if $ENV{RHTTP_PROXY_LOG};
         $backend->wtf_buffer(undef);
     }
 
@@ -170,7 +227,7 @@ sub pipe_body {
     $backend->send_size($backend->send_size - length($msg));
 
     if (0 == $backend->send_size) {
-        say(">>> [s] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+        say(">>> [s] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
         $browser->stop_read;
         $backend->stop_read;
         $browser->push_write($msg);
@@ -185,7 +242,7 @@ sub pipe_body {
         return 1;
     }
     else {
-        say(">>> [w] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+        say(">>> [w] " . $backend->content_length() . " " . $backend->send_size() . " " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
         $browser->push_write($msg);
     }
 
@@ -197,9 +254,11 @@ package Browser;
 use strict;
 use warnings;
 
-use feature qw(:5.10);
+our @ISA = qw(Base AnyEvent::Handle);
+BEGIN {
+    Base->import;
+}
 
-use Mojo::Base 'AnyEvent::Handle';
 
 use AnyEvent::Socket;
 use IO::String;
@@ -237,7 +296,7 @@ sub new {
     my $browser;
     $browser = shift->SUPER::new(
         fh => $fh,
-        timeout => 45,
+        timeout => 30,
         on_timeout => sub {
             my $h = $browser->headers;
             $h->setpos(0);
@@ -294,7 +353,7 @@ sub init {
 sub restart {
     my ($browser, $backend) = @_;
 
-    say("===") if $ENV{HTTP_PROXY_LOG};
+    say("===") if $ENV{RHTTP_PROXY_LOG};
 
     $backend->init;
     $browser->init;
@@ -314,7 +373,7 @@ sub pipe_websocket {
 
     $browser->backend->push_write($msg);
 
-    say(">>> [ws:bck] " . length($msg)) if $ENV{HTTP_PROXY_LOG};
+    say(">>> [ws:bck] " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
 }
 
 sub pipe_browser_content {
@@ -324,8 +383,8 @@ sub pipe_browser_content {
     substr($browser->rbuf, 0) = "";
 
     $browser->send_size($browser->send_size - length($msg));
-    say(">>> " . $browser->content_length() . " " . $browser->send_size() . " " . length($msg)) if $ENV{HTTP_PROXY_LOG};
-    say("    >>> $msg") if $ENV{HTTP_PROXY_LOG};
+    say(">>> " . $browser->content_length() . " " . $browser->send_size() . " " . length($msg)) if $ENV{RHTTP_PROXY_LOG};
+    say("    >>> $msg") if $ENV{RHTTP_PROXY_LOG};
 
     $browser->backend->push_write($msg);
 
@@ -370,7 +429,7 @@ sub get_headers {
             if (/Connection: close/) {
                 $browser->keep_alive(0);
             }
-            print("<<< $_") if ($ENV{HTTP_PROXY_LOG});
+            print("<<< $_") if ($ENV{RHTTP_PROXY_LOG});
         }
         $h->setpos(0);
 
@@ -395,6 +454,21 @@ sub connect_backend {
     my $vhost;
 
     foreach my $key (keys %$vhosts) {
+        if ($key =~ m/^dbi/) {
+            my $config = DBX->vhost($key, $host_header);
+            if ($config) {
+                my ($tls);
+
+                ($host, $port, $tls) = split(/:/, $config);
+
+                $vhost = {};
+                $$vhost{host} = $host;
+                $$vhost{port} = $port;
+                $$vhost{tls} = $tls;
+                
+                last;
+            }
+        }
         if ($host_header eq $key) {
             $host = $vhosts->{$key}{host};
             $port = $vhosts->{$key}{port};
@@ -403,7 +477,7 @@ sub connect_backend {
     }
 
     if (!$host && !$port) {
-        if ($ENV{HTTP_PROXY_LOG}) {
+        if ($ENV{RHTTP_PROXY_LOG}) {
             say("Can't tcp_connect without a host and port: " . $host_header);
         }
 
@@ -413,13 +487,13 @@ sub connect_backend {
     tcp_connect($host => $port, sub {
         eval {
             my $fh = shift or die "unable to connect: [$host:$port]: $!";
-            say("tcp_connect($_[0]:$_[1]) [$$vhost{tls}]") if ($ENV{HTTP_PROXY_LOG});
+            say("tcp_connect($_[0]:$_[1]) [$$vhost{tls}]") if ($ENV{RHTTP_PROXY_LOG});
             my $backend = Backend->new(fh => $fh, browser => $browser, vhost => $vhost);
 
             $backend->browser->parse_header;
         };
         warn($@) if $@;
-    });
+    }) unless $browser->backend;
 }
 
 sub parse_header {
@@ -441,21 +515,77 @@ sub parse_header {
     }
 }
 
+package DBX;
+
+use DBIx::Connector;
+
+sub vhost {
+    my ($self, $dsn, $header) = @_;
+
+    state $conn = {};
+    state $lb = {};
+    
+    $$conn{$dsn} //= DBIx::Connector->new($dsn, undef, undef, {
+        RaiseError => 1,
+        PrintError => 0,
+        AutoCommit => 0,
+        pg_server_prepare => 0,
+        pg_enable_utf8 => 1,
+    });
+
+    my $sql = "SELECT COUNT(config) FROM vhost WHERE header = ?";
+    my $count = col($$conn{$dsn}, $sql, undef, $header);
+
+    if (!$$lb{$header} || $count != $$lb{$header}{count}) {
+        $$lb{$header} = {};
+        $$lb{$header}{count} = $count;
+        $$lb{$header}{offset} = 0;
+    }
+
+    my $offset = $$lb{$header}{offset};
+
+    $sql = "SELECT config FROM vhost WHERE header = ? ORDER BY config LIMIT 1 OFFSET $offset";
+
+    # It's a loadbalancer
+    ++$offset;
+    if ($offset >= $count) {
+        $$lb{$header}{offset} = 0;
+    }
+    else {
+        $$lb{$header}{offset} = $offset;
+    }
+    
+    return(col($$conn{$dsn}, $sql, undef, $header));
+}
+sub col {
+    my $conn = shift;
+    my $sql = shift;
+    my $attrs = shift;
+    my @vars = @_;
+
+    my $ret = $conn->dbh()->selectcol_arrayref($sql, $attrs, @vars);
+    if ($ret && $$ret[0]) {
+        return($$ret[0]);
+    }
+
+    return(undef);
+}
 
 package main;
 
 use strict;
 use warnings;
 
-use feature qw(:5.10);
+use Modern::Perl;
 
 use AnyEvent;
-use AnyEvent::Socket;
+use AnyEvent::Handle;
 use AnyEvent::Log;
+use AnyEvent::Socket;
 use Getopt::Long;
 use JSON::PP;
 
-our $VERSION = "0.01";
+our $VERSION = "0.03";
 
 $| = 1;
 
@@ -468,6 +598,8 @@ our %Config = (
     vhost => {},
     listen => {}
 );
+
+# load balancer with round-robin, least-connected
 
 GetOptions(\%Config, "config_file|config=s", "host=s", "port=s", "add=s", "del=s") or exit;
 
@@ -483,6 +615,11 @@ if ($Config{add}) {
         $Config{vhost}{$vhost}{host} = $host;
         $Config{vhost}{$vhost}{port} = $port;
         $Config{vhost}{$vhost}{tls} = "off" eq $tls ? 0 : 1;
+    }
+    elsif ($add =~ m#^vhost:dsn:(?<dsn>.*)#) {
+        my ($dsn) = ($+{dsn});
+
+        $Config{vhost}{$dsn} = 1;
     }
     elsif ($add =~ m#^listen:(?<ip>[^:]+):(?<port>\d+):tls_(?<tls>off|on)#) {
         my ($ip, $port, $tls) = ($+{ip}, $+{port}, $+{tls});
@@ -525,8 +662,7 @@ if ($Config{del}) {
         else {
             die("No vhost config found for ($vhost)\n");
         }
-    }
-    elsif ($del =~ m#^listen:(?<ip>[^:]+):(?<port>\d+)#) {
+    } elsif ($del =~ m#^listen:(?<ip>[^:]+):(?<port>\d+)#) {
         my ($ip, $port) = ($+{host}, $+{port});
 
         my $listen = "${ip}:$port";
@@ -564,13 +700,13 @@ my %server = ();
 foreach my $listen (sort keys %{$Config{listen}}) {
     my ($host, $port) = split(/:/, $listen);
 
-    say("tcp_server($host:$port) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{HTTP_PROXY_LOG});
+    say("tcp_server($host:$port) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{RHTTP_PROXY_LOG});
     $server{$listen} = tcp_server($host, $port, sub {
         my ($fh, $peerhost, $peerport) = @_;
 
         my $listen = "${host}:$port";
 
-        say("proxy_accept($peerhost:$peerport) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{HTTP_PROXY_LOG});
+        say("proxy_accept($peerhost:$peerport) [tls: $Config{listen}{$listen}{tls}]") if ($ENV{RHTTP_PROXY_LOG});
 
         Browser->new($fh, $host, $port);
     });
